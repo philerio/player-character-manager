@@ -1,3 +1,12 @@
+import { getDraftScope } from "../google-sheets-api";
+import {
+  AppError,
+  errorMessage,
+  definitelyNotApplied,
+  type SyncProgress,
+} from "./errors";
+import { acknowledgeTerritoryOperation } from "./territoryStorage";
+import { loadCachedSheetData } from "../google-sheets-api";
 import type { AppModal } from "./core";
 import { hasSheetsConnection } from "../google-sheets-api";
 import { migrateExistingScoutingTimers } from "./territoryStorage";
@@ -53,6 +62,7 @@ import {
 import type { Dispatch, SetStateAction, RefObject } from "react";
 
 type TerritoriesContext = {
+  characterLoadRequestRef?: RefObject<number>;
   selectedCharacter: SheetCharacter | undefined;
   selectedCharacterIdRef: RefObject<string>;
   setRetainers: Dispatch<SetStateAction<SheetRetainer[]>>;
@@ -78,6 +88,9 @@ export function useTerritories(
     selectedCharacterId: "",
   },
 ) {
+  const syncLock = useRef(new Set<string>());
+  const [territoryProgress, setTerritoryProgress] =
+    useState<SyncProgress | null>(null);
   const [territories, setTerritories] = useState<SheetTerritory[]>([]);
   const [managedTerritories, setManagedTerritories] = useState<
     SheetTerritory[]
@@ -117,12 +130,97 @@ export function useTerritories(
         next.customMissions ?? existing?.customMissions ?? customMissions,
       territoryHexes:
         next.territoryHexes ?? existing?.territoryHexes ?? territoryHexes,
+      uncertainOperations: existing?.uncertainOperations,
       operations: operation
         ? [...(existing?.operations || []), operation]
         : existing?.operations || [],
       updatedAt: new Date().toISOString(),
     };
+    if (existing && operation) {
+      if (operation.kind === "tithe") {
+        nextDraft.territories = existing.territories.map((row) =>
+          row.territoryId === operation.territoryId
+            ? {
+                ...row,
+                payChurchTithe: operation.payChurchTithe,
+                updatedAt: nextDraft.updatedAt,
+              }
+            : row,
+        );
+      } else if (operation.kind === "hex" || operation.kind === "fields") {
+        const target =
+          operation.kind === "hex" ? operation.localHexId : operation.hexId;
+        const incoming = nextDraft.territoryHexes.find(
+          (row) => row.hexId === target,
+        );
+        const previous = existing.territoryHexes.find(
+          (row) => row.hexId === target,
+        );
+        if (incoming) {
+          const changed: SheetTerritoryHex =
+            operation.kind === "fields"
+              ? {
+                  ...(previous || incoming),
+                  cerealFields: operation.cerealFields,
+                  cottonFields: operation.cottonFields,
+                  pastureFields: operation.pastureFields,
+                  updatedAt: nextDraft.updatedAt,
+                }
+              : {
+                  ...(previous || incoming),
+                  mapX: operation.mapX,
+                  mapY: operation.mapY,
+                  title: operation.title ?? previous?.title,
+                  contents: operation.contents ?? previous?.contents,
+                  dmRevealed: operation.dmRevealed ?? previous?.dmRevealed,
+                  isDiscovered: true,
+                  updatedAt: nextDraft.updatedAt,
+                };
+          nextDraft.territoryHexes = [
+            changed,
+            ...existing.territoryHexes.filter((row) => row.hexId !== target),
+          ];
+        }
+      } else if (operation.kind === "scouting-start") {
+        const mission = nextDraft.scoutingMissions.find(
+          (row) => row.missionId === operation.localMissionId,
+        );
+        if (mission)
+          nextDraft.scoutingMissions = [
+            mission,
+            ...existing.scoutingMissions.filter(
+              (row) => row.missionId !== mission.missionId,
+            ),
+          ];
+      } else if (operation.kind === "custom-start") {
+        const mission = nextDraft.customMissions.find(
+          (row) => row.missionId === operation.localMissionId,
+        );
+        if (mission)
+          nextDraft.customMissions = [
+            mission,
+            ...existing.customMissions.filter(
+              (row) => row.missionId !== mission.missionId,
+            ),
+          ];
+      } else {
+        const incoming = nextDraft.scoutingMissions.find(
+          (row) => row.missionId === operation.missionId,
+        );
+        nextDraft.scoutingMissions = existing.scoutingMissions.map((row) =>
+          row.missionId === operation.missionId && incoming
+            ? {
+                ...row,
+                resultsViewedAt:
+                  incoming.resultsViewedAt || row.resultsViewedAt,
+                dismissedAt: incoming.dismissedAt || row.dismissedAt,
+              }
+            : row,
+        );
+      }
+    }
     saveTerritoryDraft(nextDraft);
+    if (getContext().selectedCharacterIdRef.current !== characterId) return;
     setTerritories(nextDraft.territories);
     setScoutingMissions(nextDraft.scoutingMissions);
     setCustomMissions(nextDraft.customMissions);
@@ -310,18 +408,52 @@ export function useTerritories(
   async function syncTerritoryData() {
     const { selectedCharacter, selectedCharacterIdRef } = getContext();
 
-    if (!selectedCharacter || !territoryDraftDirty || territorySyncing) return;
+    if (!selectedCharacter) return;
     const characterId = selectedCharacter.characterId;
+    const scope = getDraftScope();
+    const assertScope = () => {
+      if (getDraftScope() !== scope)
+        throw new AppError(
+          "uncertain",
+          "The account changed during synchronization. The original account’s draft is preserved for review when you sign in again.",
+        );
+    };
+    if (syncLock.current.has(characterId))
+      throw new AppError(
+        "conflict",
+        "Territories are already syncing. Wait for the current operation to finish.",
+      );
     const draft = loadTerritoryDraft(characterId);
     if (!draft || !draft.operations.length) {
       setTerritoryDraftDirty(false);
       return;
     }
 
+    if (draft.uncertainOperations?.length)
+      throw new AppError(
+        "uncertain",
+        "A custom mission has an unconfirmed result. Your orders are preserved. Check the campaign copy before refreshing; the mission will not be sent again automatically.",
+      );
+    syncLock.current.add(characterId);
+    let completed = 0;
+    const total = draft.operations.length;
+    const active = () => selectedCharacterIdRef.current === characterId;
+    const showProgress = () => {
+      if (active())
+        setTerritoryProgress({
+          completed,
+          total,
+          label: `Saving territory changes ${completed} of ${total}`,
+        });
+    };
+    showProgress();
     setTerritorySyncing(true);
     setTerritorySyncError("");
     try {
       for (const operation of draft.operations) {
+        assertScope();
+        let confirmedMission:
+          SheetScoutingMission | SheetCustomMission | undefined;
         if (operation.kind === "tithe") {
           await updateTerritoryChurchTithe({
             characterId,
@@ -361,6 +493,7 @@ export function useTerritories(
             startedAt: operation.startedAt,
             durationDays: operation.durationDays,
           } as Parameters<typeof startScoutingMission>[0]);
+          confirmedMission = startedMission.mission;
           const existingTimer = loadLocalScoutingTimers(characterId).find(
             (timer) => timer.clientMissionId === operation.localMissionId,
           );
@@ -377,17 +510,40 @@ export function useTerritories(
             }
           }
         } else if (operation.kind === "custom-start") {
-          await createCustomMission({
-            characterId,
-            territoryId: operation.territoryId,
-            objective: operation.objective,
-            missionLocation: operation.missionLocation,
-            startDate: operation.startDate,
-            durationDays: operation.durationDays,
-            allocations: operation.allocations,
-            officerRetainerId: operation.officerRetainerId,
-            additionalNotes: operation.additionalNotes,
+          const latest = loadTerritoryDraft(characterId)!;
+          saveTerritoryDraft({
+            ...latest,
+            uncertainOperations: [
+              ...(latest.uncertainOperations || []),
+              operation.id,
+            ],
           });
+          try {
+            const result = await createCustomMission({
+              clientMutationId: operation.id,
+              characterId,
+              territoryId: operation.territoryId,
+              objective: operation.objective,
+              missionLocation: operation.missionLocation,
+              startDate: operation.startDate,
+              durationDays: operation.durationDays,
+              allocations: operation.allocations,
+              officerRetainerId: operation.officerRetainerId,
+              additionalNotes: operation.additionalNotes,
+            });
+            confirmedMission = result.mission;
+          } catch (reason) {
+            if (getDraftScope() === scope && definitelyNotApplied(reason)) {
+              const pending = loadTerritoryDraft(characterId)!;
+              saveTerritoryDraft({
+                ...pending,
+                uncertainOperations: pending.uncertainOperations?.filter(
+                  (id) => id !== operation.id,
+                ),
+              });
+            }
+            throw reason;
+          }
         } else if (operation.kind === "scouting-view") {
           await viewScoutingMissionResults({
             characterId,
@@ -399,11 +555,41 @@ export function useTerritories(
             missionId: operation.missionId,
           });
         }
+        assertScope();
+        const latest = acknowledgeTerritoryOperation(
+          characterId,
+          operation,
+          confirmedMission,
+        );
+        if (active()) {
+          setTerritories(latest.territories);
+          setTerritoryHexes(latest.territoryHexes);
+          setScoutingMissions(latest.scoutingMissions);
+          setCustomMissions(latest.customMissions);
+          setTerritoryDraftDirty(latest.operations.length > 0);
+        }
+        completed++;
+        showProgress();
       }
 
       // This read is intentionally the authoritative completion point. It also
       // adjudicates any scouting mission whose real-world timer has expired.
       const data = await loadTerritoryStatus(characterId);
+      assertScope();
+      const latest = loadTerritoryDraft(characterId);
+      if (latest?.operations.length) {
+        if (active()) setTerritoryDraftDirty(true);
+        return;
+      }
+      const cache = loadCachedSheetData(characterId);
+      if (cache)
+        saveCachedSheetData({
+          ...cache,
+          territories: data.territories,
+          territoryHexes: data.territoryHexes,
+          scoutingMissions: data.scoutingMissions,
+          customMissions: data.customMissions || [],
+        });
       clearTerritoryDraft(characterId);
       reconcileLocalScoutingTimersWithAuthoritative(
         characterId,
@@ -425,7 +611,8 @@ export function useTerritories(
         );
       throw error;
     } finally {
-      setTerritorySyncing(false);
+      syncLock.current.delete(characterId);
+      if (active() || !syncLock.current.size) setTerritorySyncing(false);
     }
   }
 
@@ -439,6 +626,7 @@ export function useTerritories(
 
     if (!selectedCharacter) return;
     const characterId = selectedCharacter.characterId;
+    const generation = getContext().characterLoadRequestRef?.current;
     if (
       territoryDraftDirty &&
       !window.confirm(
@@ -447,11 +635,21 @@ export function useTerritories(
     )
       return;
 
+    const before = JSON.stringify(loadTerritoryDraft(characterId));
     setTerritorySyncing(true);
     setTerritorySyncError("");
     try {
       const data = await loadTerritoryStatus(characterId);
-      if (selectedCharacterIdRef.current !== characterId) return;
+      if (
+        selectedCharacterIdRef.current !== characterId ||
+        getContext().characterLoadRequestRef?.current !== generation
+      )
+        return;
+      if (JSON.stringify(loadTerritoryDraft(characterId)) !== before)
+        throw new AppError(
+          "conflict",
+          "New territory edits were made while refreshing. They are preserved; retry when editing is finished.",
+        );
       clearTerritoryDraft(characterId);
       reconcileLocalScoutingTimersWithAuthoritative(
         characterId,
@@ -472,7 +670,7 @@ export function useTerritories(
 
       // DM refresh also picks up player-created recruits unless the DM has
       // deliberately kept a local unsynced Retainers working copy.
-      if (!retainerDraftDirty) setRetainers(data.retainers || []);
+      if (!loadRetainerDraft(characterId)) setRetainers(data.retainers || []);
     } catch (error) {
       if (selectedCharacterIdRef.current === characterId)
         setTerritorySyncError(
@@ -669,6 +867,7 @@ export function useTerritories(
     return () => window.clearInterval(interval);
   }, [authenticated, selectedCharacterId, scoutingMissions]);
   return {
+    territoryProgress,
     persistLocalTerritoryState,
     queueTerritoryOperation,
     submitExpiredLocalScoutingTimer,

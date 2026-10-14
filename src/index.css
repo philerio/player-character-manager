@@ -5258,3 +5258,21 @@ button {
   .dm-hex-toolbar { padding: 12px; gap: 10px; }
   .dm-hex-toolbar button { flex-grow: 1; }
 }
+
+.workflow-status, .data-error-note, .data-refresh-note, .data-placeholder {
+  border: 1px solid #c9b58d;
+  background: #f4ead4;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+}
+.workflow-status, .data-error-note { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.workflow-status > div { flex: 1 1 260px; }
+.workflow-status strong, .workflow-status small { display: block; }
+.workflow-status small { margin-top: 6px; color: #675642; }
+.workflow-status progress, .data-refresh-note progress, .data-placeholder progress { display: block; width: 100%; max-width: 440px; height: 8px; margin: 10px 0; accent-color: #7d1f1c; }
+.workflow-status.has-error, .data-error-note { border-color: #9c4e38; background: #fff1e8; }
+.data-placeholder { min-height: 160px; }
+.data-placeholder h2 { margin-top: 0; }
+.data-refresh-note { font-size: 13px; }
+.storage-error { position: sticky; top: 0; z-index: 20; }

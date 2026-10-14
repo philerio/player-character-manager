@@ -1,3 +1,4 @@
+import { loadJournalDraft } from "./journalStorage";
 import type { AppModal, DataStatus } from "./core";
 
 import { useRef, useState } from "react";
@@ -55,6 +56,7 @@ type SessionContext = {
   setSilver: Dispatch<SetStateAction<number>>;
   setCopper: Dispatch<SetStateAction<number>>;
   setTransactions: Dispatch<SetStateAction<Transaction[]>>;
+  setJournalDraftDirty: Dispatch<SetStateAction<boolean>>;
   setJournalEntries: Dispatch<SetStateAction<SheetJournalEntry[]>>;
   setRecurringExpenses: Dispatch<SetStateAction<SheetRecurringExpense[]>>;
   setRetainers: Dispatch<SetStateAction<SheetRetainer[]>>;
@@ -106,6 +108,9 @@ export function useSession(getContext: () => SessionContext) {
   const [profileSyncError, setProfileSyncError] = useState("");
   const [profileLastSyncedAt, setProfileLastSyncedAt] = useState("");
   const [profileSyncSuccess, setProfileSyncSuccess] = useState(false);
+  const [rosterReady, setRosterReady] = useState(() =>
+    Boolean(loadSharedRosterCache()),
+  );
   const [rosterRefreshing, setRosterRefreshing] = useState(false);
   const [rosterRefreshError, setRosterRefreshError] = useState("");
   const [dmTabPushing, setDmTabPushing] = useState<SheetSyncTab | "">("");
@@ -246,6 +251,7 @@ export function useSession(getContext: () => SessionContext) {
       setCopper,
       setTransactions,
       setJournalEntries,
+      setJournalDraftDirty,
       setRecurringExpenses,
       setRetainers,
       setRetainerDraftDirty,
@@ -302,6 +308,7 @@ export function useSession(getContext: () => SessionContext) {
     setCopper(0);
     setTransactions([]);
     setJournalEntries([]);
+    setJournalDraftDirty(false);
     setRecurringExpenses([]);
     setRetainers([]);
     setRetainerDraftDirty(false);
@@ -389,6 +396,7 @@ export function useSession(getContext: () => SessionContext) {
       setCopper,
       setTransactions,
       setJournalEntries,
+      setJournalDraftDirty,
       setRecurringExpenses,
       setRetainers,
       setRetainerDraftDirty,
@@ -405,13 +413,12 @@ export function useSession(getContext: () => SessionContext) {
       return;
     }
 
-    // Character selection is deliberately local-only. Opening a character must
-    // never contact Google Sheets. Sheet communication happens only through
-    // explicit Sync Character / Refresh Player Data / Push to Sheet actions.
+    // Show the saved working copy immediately; the coordinator refreshes this selection in the background.
     characterLoadRequestRef.current += 1;
     selectedCharacterIdRef.current = characterId;
     setSelectedCharacterId(characterId);
     setCharacterMenu(false);
+    getContext().setModal(null);
     setProfileSyncError("");
     setProfileSyncSuccess(false);
 
@@ -436,7 +443,10 @@ export function useSession(getContext: () => SessionContext) {
       setSilver(localWallet?.balance.sp || 0);
       setCopper(localWallet?.balance.cp || 0);
       setTransactions(localWallet?.transactions || []);
-      setJournalEntries([]);
+      setJournalEntries(loadJournalDraft(characterId)?.entries || []);
+      setJournalDraftDirty(
+        Boolean(loadJournalDraft(characterId)?.operations.length),
+      );
       setRecurringExpenses(localWallet?.recurringExpenses || []);
 
       const localRetainers = loadRetainerDraft(characterId);
@@ -465,7 +475,7 @@ export function useSession(getContext: () => SessionContext) {
     }
 
     // Do not leave the UI saying "Updating…" after a cache-only switch.
-    setDataStatus(hasSheetsConnection() ? "connected" : "demo");
+    setDataStatus(hasSheetsConnection() ? "cached" : "demo");
   }
 
   async function deleteCharacter() {
@@ -480,6 +490,7 @@ export function useSession(getContext: () => SessionContext) {
       setCopper,
       setTransactions,
       setJournalEntries,
+      setJournalDraftDirty,
       setRecurringExpenses,
       setRetainers,
       setTerritories,
@@ -522,6 +533,7 @@ export function useSession(getContext: () => SessionContext) {
       setCopper(0);
       setTransactions([]);
       setJournalEntries([]);
+      setJournalDraftDirty(false);
       setRecurringExpenses([]);
       setRetainers([]);
       setTerritories([]);
@@ -543,6 +555,7 @@ export function useSession(getContext: () => SessionContext) {
       selectedCharacterIdRef.current !== nextCharacterId
     )
       return;
+    cacheBaseRef.current = data;
     const nextLocalWallet = loadLocalWalletState(nextCharacterId);
     walletLoadedCharacterIdRef.current = nextCharacterId;
     setPlatinum(nextLocalWallet?.balance.pp || 0);
@@ -583,6 +596,7 @@ export function useSession(getContext: () => SessionContext) {
     try {
       const accountState = await loadAccountRoster();
 
+      setRosterReady(true);
       setCurrentPlayer(accountState.currentPlayer);
       setPlayers(accountState.players || []);
       setCharacters(accountState.characters || []);
@@ -692,6 +706,8 @@ export function useSession(getContext: () => SessionContext) {
     setProfileLastSyncedAt,
     profileSyncSuccess,
     setProfileSyncSuccess,
+    rosterReady,
+    setRosterReady,
     rosterRefreshing,
     setRosterRefreshing,
     rosterRefreshError,

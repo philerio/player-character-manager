@@ -37,12 +37,18 @@ export function PortraitViewer({
 }
 
 export function LoginScreen({
+  optionsStatus = "ready",
+  optionsError = "",
+  onRetryOptions,
   players,
   onLogin,
   onRegister,
   onLoadRecoveryQuestion,
   onResetPassword,
 }: {
+  optionsStatus?: "idle" | "loading" | "ready" | "error";
+  optionsError?: string;
+  onRetryOptions?: () => void;
   players: LoginOption[];
   onLogin: (input: { playerId: string; email: string; password: string }) => Promise<void>;
   onRegister: (input: { displayName: string; email: string; setupPassword: string }) => Promise<void>;
@@ -66,8 +72,11 @@ export function LoginScreen({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => { if (playerId && !players.some(player => player.playerId === playerId)) setPlayerId(""); }, [players, playerId]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!registering && (optionsStatus !== "ready" || !players.some(player => player.playerId === playerId))) { setError("Load player names and choose a player before continuing."); return; }
     setError("");
     setBusy(true);
     try {
@@ -121,14 +130,16 @@ export function LoginScreen({
         ) : (
           <label>
             Display name
-            <select value={playerId} onChange={(event) => setPlayerId(event.target.value)} required>
-              <option value="">Select your name</option>
+            <select disabled={optionsStatus !== "ready" || busy || !players.length} value={playerId} onChange={(event) => setPlayerId(event.target.value)} required>
+              <option value="">{optionsStatus === "loading" || optionsStatus === "idle" ? "Loading player names…" : optionsStatus === "error" ? "Player names unavailable" : !players.length ? "No players registered" : "Select your name"}</option>
               {players.map((player) => (
                 <option value={player.playerId} key={player.playerId}>{player.displayName}</option>
               ))}
             </select>
           </label>
         )}
+        {!registering && optionsStatus === "error" && <div role="alert"><p>{optionsError}</p><button type="button" onClick={onRetryOptions}>Retry loading names</button></div>}
+        {!registering && optionsStatus === "loading" && <progress aria-label="Loading player names" />}
         <label>
           Email
           <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
@@ -152,7 +163,7 @@ export function LoginScreen({
           </label>
         )}
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="primary-button" disabled={busy}>
+        <button className="primary-button" disabled={busy || (!registering && (optionsStatus !== "ready" || !players.some(player => player.playerId === playerId)))}>
           {busy
             ? "Please wait…"
             : registering

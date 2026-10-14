@@ -1,6 +1,19 @@
+import { getDraftScope } from "../google-sheets-api";
+import {
+  AppError,
+  errorMessage,
+  definitelyNotApplied,
+  type SyncProgress,
+} from "./errors";
+import {
+  acknowledgeRetainer,
+  acknowledgeRetainerDelete,
+  retainerDraftHasChanges,
+} from "./retainerStorage";
+import { loadCachedSheetData, saveCachedSheetData } from "../google-sheets-api";
 import type { AppModal } from "./core";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   loadRetainerData,
   saveRetainer,
@@ -23,6 +36,7 @@ import {
 import type { Dispatch, SetStateAction, RefObject } from "react";
 
 type RetainersContext = {
+  characterLoadRequestRef?: RefObject<number>;
   selectedCharacter: SheetCharacter | undefined;
   setModal: Dispatch<SetStateAction<AppModal>>;
   setRecurringExpenses: Dispatch<SetStateAction<SheetRecurringExpense[]>>;
@@ -30,6 +44,10 @@ type RetainersContext = {
 };
 
 export function useRetainers(getContext: () => RetainersContext) {
+  const syncLock = useRef(new Set<string>());
+  const [retainerProgress, setRetainerProgress] = useState<SyncProgress | null>(
+    null,
+  );
   const [retainers, setRetainers] = useState<SheetRetainer[]>([]);
   const [retainerDraftDirty, setRetainerDraftDirty] = useState(false);
   const [retainerSyncing, setRetainerSyncing] = useState(false);
@@ -52,6 +70,7 @@ export function useRetainers(getContext: () => RetainersContext) {
       characterId,
       baseRetainers,
       retainers: nextRetainers,
+      creating: existingDraft?.creating,
       updatedAt: new Date().toISOString(),
     });
     setRetainers(nextRetainers);
@@ -145,167 +164,225 @@ export function useRetainers(getContext: () => RetainersContext) {
   async function syncRetainersToCampaign(forceOverwrite = false) {
     const { selectedCharacter, setRecurringExpenses, selectedCharacterIdRef } =
       getContext();
-
-    if (!selectedCharacter || retainerSyncing) return;
+    if (!selectedCharacter) return;
     const characterId = selectedCharacter.characterId;
-    const draft =
-      loadRetainerDraft(characterId) ||
-      (forceOverwrite
-        ? {
-            characterId,
-            baseRetainers: [],
-            retainers,
-            updatedAt: new Date().toISOString(),
-          }
-        : null);
-    if (!draft) {
-      setRetainerDraftDirty(false);
-      return;
+    const scope = getDraftScope();
+    const assertScope = () => {
+      if (getDraftScope() !== scope)
+        throw new AppError(
+          "uncertain",
+          "The account changed during synchronization. The original account’s draft is preserved for review when you sign in again.",
+        );
+    };
+    if (syncLock.current.has(characterId))
+      throw new AppError(
+        "conflict",
+        "Retainers are already syncing. Wait for the current operation to finish.",
+      );
+    let draft = loadRetainerDraft(characterId);
+    if (!draft && forceOverwrite) {
+      draft = {
+        characterId,
+        baseRetainers: [],
+        retainers,
+        updatedAt: new Date().toISOString(),
+      };
+      saveRetainerDraft(draft);
     }
-
+    if (!draft) return;
+    syncLock.current.add(characterId);
     setRetainerSyncing(true);
     setRetainerSyncError("");
+    const active = () => selectedCharacterIdRef.current === characterId;
     try {
-      // Check for another-device edits using the lightweight Retainers-only
-      // endpoint. Do not load/process Territories or scouting just to sync a
-      // fighting force or individual retainer.
       const remote = await loadRetainerData(characterId);
-      const remoteById = new Map(
-        remote.retainers.map((item) => [item.retainerId, item]),
-      );
-      const baseById = new Map(
-        draft.baseRetainers.map((item) => [item.retainerId, item]),
-      );
-      const localById = new Map(
-        draft.retainers.map((item) => [item.retainerId, item]),
-      );
-
-      if (!forceOverwrite) {
-        for (const local of draft.retainers) {
-          if (local.retainerId.startsWith("local-")) continue;
-          const base = baseById.get(local.retainerId);
-          const currentRemote = remoteById.get(local.retainerId);
-          if (
-            base &&
-            currentRemote &&
-            retainerChanged(local, base) &&
-            retainerChanged(currentRemote, base)
-          ) {
-            throw new Error(
-              `${local.name} changed in the campaign after this device loaded it. Refresh Player Data before editing it again.`,
-            );
-          }
-        }
-
-        for (const base of draft.baseRetainers) {
-          if (
-            !localById.has(base.retainerId) &&
-            remoteById.has(base.retainerId)
-          ) {
-            const currentRemote = remoteById.get(base.retainerId)!;
-            if (retainerChanged(currentRemote, base)) {
-              throw new Error(
-                `${base.name} changed in the campaign after this device loaded it. Refresh Player Data before disbanding/removing it.`,
-              );
-            }
-          }
-        }
-      }
-
-      const deleteCandidates = forceOverwrite
-        ? remote.retainers.filter((item) => !localById.has(item.retainerId))
-        : draft.baseRetainers.filter(
-            (base) =>
-              !localById.has(base.retainerId) &&
-              remoteById.has(base.retainerId),
-          );
-
-      for (const item of deleteCandidates) {
-        await deleteRetainer(characterId, item.retainerId);
-        remoteById.delete(item.retainerId);
-      }
-
-      const syncedRetainers: SheetRetainer[] = [];
-      for (const local of draft.retainers) {
-        if (local.retainerId.startsWith("local-")) {
-          const result = await saveRetainer({
-            characterId,
-            ...retainerMutationInput(local),
-          });
-          syncedRetainers.push(result.retainer);
-          if (selectedCharacterIdRef.current === characterId)
-            setRecurringExpenses((items) => {
-              const withoutLinked = items.filter(
-                (item) =>
-                  item.sourceType !== "retainer" ||
-                  item.sourceId !== result.retainer.retainerId,
-              );
-              return result.schedule
-                ? [result.schedule, ...withoutLinked]
-                : withoutLinked;
-            });
-          continue;
-        }
-
-        const base = baseById.get(local.retainerId);
-        const currentRemote = remoteById.get(local.retainerId);
-
-        if (
-          currentRemote &&
-          (forceOverwrite || (base && retainerChanged(local, base)))
-        ) {
-          const result = await updateRetainer({
-            characterId,
-            retainerId: local.retainerId,
-            ...retainerMutationInput(local),
-          });
-          syncedRetainers.push(result.retainer);
-          if (selectedCharacterIdRef.current === characterId)
-            setRecurringExpenses((items) => {
-              const withoutLinked = items.filter(
-                (item) =>
-                  item.sourceType !== "retainer" ||
-                  item.sourceId !== result.retainer.retainerId,
-              );
-              return result.schedule
-                ? [result.schedule, ...withoutLinked]
-                : withoutLinked;
-            });
-        } else if (!currentRemote && forceOverwrite) {
-          const result = await saveRetainer({
-            characterId,
-            ...retainerMutationInput(local),
-          });
-          syncedRetainers.push(result.retainer);
-          if (selectedCharacterIdRef.current === characterId)
-            setRecurringExpenses((items) => {
-              const withoutLinked = items.filter(
-                (item) =>
-                  item.sourceType !== "retainer" ||
-                  item.sourceId !== result.retainer.retainerId,
-              );
-              return result.schedule
-                ? [result.schedule, ...withoutLinked]
-                : withoutLinked;
-            });
-        } else {
-          syncedRetainers.push(currentRemote || local);
-        }
-      }
-
-      clearRetainerDraft(characterId);
-      if (selectedCharacterIdRef.current !== characterId) return;
-      setRetainers(syncedRetainers);
-      setRetainerDraftDirty(false);
-      setRetainerLastSyncedAt(new Date().toISOString());
-    } catch (error) {
-      if (selectedCharacterIdRef.current === characterId)
-        setRetainerSyncError(
-          error instanceof Error ? error.message : "Could not sync retainers.",
+      assertScope();
+      if (draft.creating) {
+        const confirmed = remote.retainers.find(
+          (row) => row.clientMutationId === draft!.creating!.mutationId,
         );
+        const sent = draft.retainers.find(
+          (row) => row.retainerId === draft!.creating!.localId,
+        );
+        if (!confirmed || !sent)
+          throw new AppError(
+            "uncertain",
+            "A retainer creation has an unconfirmed result. Your draft is preserved. Check the campaign roster before refreshing; this creation will not be sent again automatically.",
+          );
+        draft = acknowledgeRetainer(characterId, sent, confirmed);
+      }
+      const base = new Map(
+        draft.baseRetainers.map((row) => [row.retainerId, row]),
+      );
+      const local = new Map(
+        draft.retainers.map((row) => [row.retainerId, row]),
+      );
+      const remoteById = new Map(
+        remote.retainers.map((row) => [row.retainerId, row]),
+      );
+      if (!forceOverwrite)
+        for (const row of draft.baseRetainers) {
+          const changed =
+            !local.has(row.retainerId) ||
+            retainerChanged(local.get(row.retainerId)!, row);
+          const server = remoteById.get(row.retainerId);
+          if (changed && (!server || retainerChanged(server, row)))
+            throw new AppError(
+              "conflict",
+              `${row.name} changed or was removed in the campaign. Your edits are preserved. Review the campaign copy before replacing them.`,
+            );
+        }
+      const deletes = forceOverwrite
+        ? remote.retainers.filter((row) => !local.has(row.retainerId))
+        : draft.baseRetainers.filter((row) => !local.has(row.retainerId));
+      const writes = draft.retainers.filter(
+        (row) =>
+          row.retainerId.startsWith("local-") ||
+          forceOverwrite ||
+          (base.has(row.retainerId) &&
+            retainerChanged(row, base.get(row.retainerId)!)),
+      );
+      const total = deletes.length + writes.length;
+      let completed = 0;
+      const progress = () => {
+        if (active())
+          setRetainerProgress({
+            completed,
+            total,
+            label: `Saving retainers ${completed} of ${total}`,
+          });
+      };
+      progress();
+      for (const row of deletes) {
+        assertScope();
+        if (remoteById.has(row.retainerId))
+          await deleteRetainer(characterId, row.retainerId);
+        // force-overwrite removals need an acknowledgement base for safe retries.
+        let latest = loadRetainerDraft(characterId)!;
+        if (
+          !latest.baseRetainers.some(
+            (item) => item.retainerId === row.retainerId,
+          )
+        ) {
+          latest = { ...latest, baseRetainers: [...latest.baseRetainers, row] };
+          saveRetainerDraft(latest);
+        }
+        assertScope();
+        acknowledgeRetainerDelete(characterId, row.retainerId);
+        remoteById.delete(row.retainerId);
+        completed++;
+        progress();
+      }
+      for (const sent of writes) {
+        assertScope();
+        const create =
+          sent.retainerId.startsWith("local-") ||
+          !remoteById.has(sent.retainerId);
+        const mutationId = `retainer:${sent.retainerId}`;
+        if (create) {
+          const latest = loadRetainerDraft(characterId)!;
+          saveRetainerDraft({
+            ...latest,
+            creating: { localId: sent.retainerId, mutationId },
+          });
+        }
+        let result: Awaited<ReturnType<typeof saveRetainer>>;
+        try {
+          result = create
+            ? await saveRetainer({
+                characterId,
+                clientMutationId: mutationId,
+                ...retainerMutationInput(sent),
+              })
+            : await updateRetainer({
+                characterId,
+                retainerId: sent.retainerId,
+                ...retainerMutationInput(sent),
+              });
+        } catch (reason) {
+          if (
+            getDraftScope() === scope &&
+            create &&
+            definitelyNotApplied(reason)
+          ) {
+            const latest = loadRetainerDraft(characterId)!;
+            saveRetainerDraft({ ...latest, creating: undefined });
+          }
+          throw reason;
+        }
+        assertScope();
+        const latest = acknowledgeRetainer(characterId, sent, result.retainer);
+        remoteById.set(result.retainer.retainerId, result.retainer);
+        if (active()) {
+          setRetainers(latest.retainers);
+          setRecurringExpenses((items) => {
+            const filtered = items.filter(
+              (item) =>
+                item.sourceType !== "retainer" ||
+                (item.sourceId !== sent.retainerId &&
+                  item.sourceId !== result.retainer.retainerId),
+            );
+            return result.schedule ? [result.schedule, ...filtered] : filtered;
+          });
+        }
+        completed++;
+        progress();
+      }
+      let latest = loadRetainerDraft(characterId)!;
+      // Retain additions from other devices. Never replace concurrently edited rows.
+      const changedIds = new Set(
+        latest.baseRetainers
+          .filter(
+            (row) =>
+              !latest.retainers.some(
+                (item) => item.retainerId === row.retainerId,
+              ),
+          )
+          .map((row) => row.retainerId),
+      );
+      const remaining = latest.retainers.map((row) => {
+        const original = latest.baseRetainers.find(
+          (item) => item.retainerId === row.retainerId,
+        );
+        return original && !retainerChanged(row, original)
+          ? remoteById.get(row.retainerId) || row
+          : row;
+      });
+      for (const row of remoteById.values())
+        if (
+          !remaining.some((item) => item.retainerId === row.retainerId) &&
+          !changedIds.has(row.retainerId)
+        )
+          remaining.push(row);
+      latest = {
+        ...latest,
+        retainers: remaining,
+        baseRetainers: [...remoteById.values()],
+        updatedAt: new Date().toISOString(),
+      };
+      const dirty = retainerDraftHasChanges(latest);
+      saveRetainerDraft(latest);
+      if (!dirty) clearRetainerDraft(characterId);
+      const cache = loadCachedSheetData(characterId);
+      if (cache)
+        saveCachedSheetData({
+          ...cache,
+          retainers: dirty ? latest.baseRetainers : latest.retainers,
+        });
+      if (active()) {
+        setRetainers(latest.retainers);
+        setRetainerDraftDirty(dirty);
+        setRetainerLastSyncedAt(new Date().toISOString());
+      }
+    } catch (error) {
+      if (active()) {
+        setRetainerDraftDirty(Boolean(loadRetainerDraft(characterId)));
+        setRetainerSyncError(errorMessage(error));
+      }
       throw error;
     } finally {
-      setRetainerSyncing(false);
+      syncLock.current.delete(characterId);
+      if (active() || !syncLock.current.size) setRetainerSyncing(false);
     }
   }
 
@@ -314,6 +391,7 @@ export function useRetainers(getContext: () => RetainersContext) {
 
     if (!selectedCharacter) return;
     const characterId = selectedCharacter.characterId;
+    const generation = getContext().characterLoadRequestRef?.current;
     if (
       retainerDraftDirty &&
       !window.confirm(
@@ -322,12 +400,24 @@ export function useRetainers(getContext: () => RetainersContext) {
     )
       return;
 
+    const before = JSON.stringify(loadRetainerDraft(characterId));
     setRetainerSyncing(true);
     setRetainerSyncError("");
     try {
       const data = await loadRetainerData(characterId);
-      if (selectedCharacterIdRef.current !== characterId) return;
+      if (JSON.stringify(loadRetainerDraft(characterId)) !== before)
+        throw new AppError(
+          "conflict",
+          "New edits were made while refreshing. They are preserved; retry when editing is finished.",
+        );
+      if (
+        selectedCharacterIdRef.current !== characterId ||
+        getContext().characterLoadRequestRef?.current !== generation
+      )
+        return;
       clearRetainerDraft(characterId);
+      const cache = loadCachedSheetData(characterId);
+      if (cache) saveCachedSheetData({ ...cache, retainers: data.retainers });
       setRetainers(data.retainers || []);
       setRetainerDraftDirty(false);
       setRetainerLastSyncedAt(new Date().toISOString());
@@ -344,6 +434,7 @@ export function useRetainers(getContext: () => RetainersContext) {
     }
   }
   return {
+    retainerProgress,
     persistLocalRetainers,
     saveRetainerRecord,
     removeRetainerRecord,

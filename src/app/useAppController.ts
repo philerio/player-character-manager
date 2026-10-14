@@ -1,3 +1,7 @@
+import { retainerDraftHasChanges } from "./retainerStorage";
+import { loadJournalDraft } from "./journalStorage";
+import { useBackgroundSync } from "./useBackgroundSync";
+import { AppError, errorMessage } from "./errors";
 import type { AppModal, DataStatus } from "./core";
 import { useSession } from "./useSession";
 import { useWallet } from "./useWallet";
@@ -86,6 +90,8 @@ export function useAppController() {
     setProfileLastSyncedAt,
     profileSyncSuccess,
     setProfileSyncSuccess,
+    rosterReady,
+    setRosterReady,
     rosterRefreshing,
     setRosterRefreshing,
     rosterRefreshError,
@@ -106,6 +112,7 @@ export function useAppController() {
     setCopper,
     setTransactions,
     setJournalEntries,
+    setJournalDraftDirty,
     setRecurringExpenses,
     setRetainers,
     setRetainerDraftDirty,
@@ -149,7 +156,13 @@ export function useAppController() {
     walletBackupError,
     setWalletBackupError,
   } = useWallet(
-    () => ({ selectedCharacterIdRef, selectedCharacter, setModal, setSection }),
+    () => ({
+      characterLoadRequestRef,
+      selectedCharacterIdRef,
+      selectedCharacter,
+      setModal,
+      setSection,
+    }),
     selectedCharacterId,
   );
   const {
@@ -157,11 +170,12 @@ export function useAppController() {
     saveRetainerRecord,
     removeRetainerRecord,
     syncRetainersToCampaign,
-    refreshRetainersFromCampaign,
+    refreshRetainersFromCampaign: replaceRetainersFromCampaign,
     retainers,
     setRetainers,
     retainerDraftDirty,
     setRetainerDraftDirty,
+    retainerProgress,
     retainerSyncing,
     setRetainerSyncing,
     retainerSyncError,
@@ -173,6 +187,7 @@ export function useAppController() {
     retainerKind,
     setRetainerKind,
   } = useRetainers(() => ({
+    characterLoadRequestRef,
     selectedCharacter,
     setModal,
     setRecurringExpenses,
@@ -183,7 +198,7 @@ export function useAppController() {
     queueTerritoryOperation,
     submitExpiredLocalScoutingTimer,
     syncTerritoryData,
-    refreshTerritoryDataFromCampaign,
+    refreshTerritoryDataFromCampaign: replaceTerritoryDataFromCampaign,
     saveTerritoryRecord,
     saveTerritoryForCharacter,
     deleteTerritoryRecord,
@@ -200,6 +215,7 @@ export function useAppController() {
     setTerritoryHexes,
     territoryDraftDirty,
     setTerritoryDraftDirty,
+    territoryProgress,
     territorySyncing,
     setTerritorySyncing,
     territorySyncError,
@@ -211,6 +227,7 @@ export function useAppController() {
     scoutingAutoSubmitInFlightRef,
   } = useTerritories(
     () => ({
+      characterLoadRequestRef,
       selectedCharacter,
       selectedCharacterIdRef,
       setRetainers,
@@ -226,6 +243,12 @@ export function useAppController() {
     persistJournalCache,
     saveCampaignJournalEntry,
     removeCampaignJournalEntry,
+    journalDraftDirty,
+    setJournalDraftDirty,
+    journalSyncing,
+    journalSyncError,
+    journalProgress,
+    syncJournalToCampaign,
     journalEntries,
     setJournalEntries,
     editingJournalEntry,
@@ -295,6 +318,7 @@ export function useAppController() {
   const applySheetData = useCallback(
     (data: SheetBootstrap, openEmptyCharacterModal = true) => {
       cacheBaseRef.current = data;
+      setRosterReady(true);
       setCharacters(data.characters);
       setCampaignName(data.campaignName || "Evermoor Campaign");
       setDiscordWebhookConfigured(Boolean(data.discordWebhookConfigured));
@@ -329,7 +353,16 @@ export function useAppController() {
         setSilver(localWallet.balance.sp);
         setCopper(localWallet.balance.cp);
         setTransactions(localWallet.transactions);
-        setJournalEntries(data.journal || []);
+        setJournalEntries(
+          loadJournalDraft(data.selectedCharacterId)?.entries ||
+            data.journal ||
+            [],
+        );
+        setJournalDraftDirty(
+          Boolean(
+            loadJournalDraft(data.selectedCharacterId)?.operations.length,
+          ),
+        );
         setRecurringExpenses(localWallet.recurringExpenses);
         const savedRetainerDraft = loadRetainerDraft(data.selectedCharacterId);
         if (savedRetainerDraft) {
@@ -382,10 +415,7 @@ export function useAppController() {
   useEffect(() => {
     if (!authenticated) return;
 
-    // PLAYER DATA STARTUP IS LOCAL-ONLY.
-    // Do not contact Google Sheets here. The player explicitly chose a
-    // local-first workflow: Sheet communication is permitted only when an
-    // explicit sync/refresh/push action is pressed.
+    // Hydrate the saved working copy immediately; background reads preserve it while refreshing.
     const cached = loadCachedSheetData();
 
     if (cached) {
@@ -402,6 +432,7 @@ export function useAppController() {
     const accountCharacters = accountState?.characters || [];
     const initialCharacterId = accountCharacters[0]?.characterId || "";
     selectedCharacterIdRef.current = initialCharacterId;
+    setRosterReady(Boolean(accountState));
     setCharacters(accountCharacters);
     setPlayers(accountState?.players || []);
     setCurrentPlayer(accountState?.currentPlayer || null);
@@ -435,6 +466,7 @@ export function useAppController() {
       // the account cache has been established.
       void loadAccountRoster()
         .then((roster) => {
+          setRosterReady(true);
           setCurrentPlayer(roster.currentPlayer);
           setPlayers(roster.players || []);
           setCharacters(roster.characters || []);
@@ -455,6 +487,7 @@ export function useAppController() {
           setDataStatus("connected");
         })
         .catch((error) => {
+          setRosterRefreshError(errorMessage(error));
           if (String(error).toLowerCase().includes("session")) {
             clearSession();
             setAuthenticated(false);
@@ -515,18 +548,41 @@ export function useAppController() {
     territoryHexes,
   ]);
 
+  const [loginOptionsStatus, setLoginOptionsStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
+  const [loginOptionsError, setLoginOptionsError] = useState("");
+  const [loginRetry, setLoginRetry] = useState(0);
   useEffect(() => {
     if (!hasSheetsConnection() || authenticated) return;
-    loadLoginOptions()
-      .then(setLoginOptions)
-      .catch(() => setLoginOptions([]));
-  }, [authenticated]);
+    let cancelled = false;
+    setLoginOptionsStatus("loading");
+    setLoginOptionsError("");
+    void loadLoginOptions()
+      .then((options) => {
+        if (!cancelled) {
+          setLoginOptions(options);
+          setLoginOptionsStatus("ready");
+        }
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setLoginOptionsStatus("error");
+          setLoginOptionsError(errorMessage(reason));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated, loginRetry]);
+  const retryLoginOptions = () => setLoginRetry((value) => value + 1);
 
   const coinWeight = useMemo(
     () => ((platinum + gold + silver + copper) / 10).toFixed(1),
     [platinum, gold, silver, copper],
   );
-  const profileHasUnsyncedChanges = retainerDraftDirty || territoryDraftDirty;
+  const profileHasUnsyncedChanges =
+    retainerDraftDirty || territoryDraftDirty || journalDraftDirty;
   const visibleNavItems = useMemo(() => {
     const items = navItems.filter((item) => {
       if (item.id === "territories") return permissions.territories;
@@ -558,12 +614,30 @@ export function useAppController() {
         );
       } else if (tab === "retainers") {
         await syncRetainersToCampaign(true);
+      } else if (tab === "journal") {
+        await syncJournalToCampaign();
       } else if (tab === "territories") {
         if (loadTerritoryDraft(characterId)?.operations.length) {
           await syncTerritoryData();
         }
       }
 
+      const newerEdits = () =>
+        tab === "retainers"
+          ? Boolean(
+              loadRetainerDraft(characterId) &&
+              retainerDraftHasChanges(loadRetainerDraft(characterId)!),
+            )
+          : tab === "territories"
+            ? Boolean(loadTerritoryDraft(characterId)?.operations.length)
+            : tab === "journal"
+              ? Boolean(loadJournalDraft(characterId)?.operations.length)
+              : false;
+      if (newerEdits())
+        throw new AppError(
+          "conflict",
+          "Changes made during the push remain saved locally. Push again after editing is finished to publish them.",
+        );
       const pushed = await markTabAuthoritative({ characterId, tab });
       const accepted = loadAcceptedTabSyncRevisions(characterId);
       saveAcceptedTabSyncRevisions(characterId, {
@@ -571,6 +645,12 @@ export function useAppController() {
         [tab]: pushed.revision,
       });
 
+      if (selectedCharacterIdRef.current !== characterId) return;
+      if (newerEdits())
+        throw new AppError(
+          "conflict",
+          "Confirmed changes were published; newer edits remain saved locally for the next push.",
+        );
       setDmTabPushSuccess(tab);
       window.setTimeout(() => {
         setDmTabPushSuccess((current) => (current === tab ? "" : current));
@@ -588,253 +668,87 @@ export function useAppController() {
     }
   }
 
-  async function syncWholeProfile() {
-    if (!selectedCharacter || profileSyncing) return;
-
-    const characterId = selectedCharacter.characterId;
-    const readOnlyDmRefresh = permissions.isDm && !dmOwnsSelectedCharacter;
-
+  const background = useBackgroundSync(
+    () => ({
+      selectedCharacterIdRef,
+      characterLoadRequestRef,
+      cacheBaseRef,
+      selectedCharacter,
+      currentPlayer,
+      permissions,
+      setAuthenticated,
+      setCurrentPlayer,
+      setPlayers,
+      setCharacters,
+      setPermissions,
+      accountPermissions,
+      setJournalEntries,
+      setRetainers,
+      setTerritories,
+      setManagedTerritories,
+      setScoutingMissions,
+      setCustomMissions,
+      setTerritoryHexes,
+      syncRetainersToCampaign,
+      syncTerritoryData,
+      syncJournalToCampaign,
+      setRosterReady,
+      setRosterRefreshing,
+      setRosterRefreshError,
+    }),
+    {
+      characterId: selectedCharacterId,
+      authenticated,
+      retainerDirty: retainerDraftDirty,
+      territoryDirty: territoryDraftDirty,
+      journalDirty: journalDraftDirty,
+    },
+  );
+  async function refreshRetainersFromCampaign() {
+    const id = selectedCharacterIdRef.current,
+      generation = characterLoadRequestRef.current;
+    await replaceRetainersFromCampaign();
     if (
-      readOnlyDmRefresh &&
-      (retainerDraftDirty || territoryDraftDirty) &&
-      !window.confirm(
-        "Sync Character on another player's character is read-only and will refresh from the workbook. " +
-          "Unsynced Retainer/Territory changes on this device will be discarded. Continue?",
-      )
+      selectedCharacterIdRef.current === id &&
+      characterLoadRequestRef.current === generation &&
+      !loadRetainerDraft(id)
     )
-      return;
-
+      background.confirmResource("retainers");
+  }
+  async function refreshTerritoryDataFromCampaign() {
+    const id = selectedCharacterIdRef.current,
+      generation = characterLoadRequestRef.current;
+    await replaceTerritoryDataFromCampaign();
+    if (
+      selectedCharacterIdRef.current === id &&
+      characterLoadRequestRef.current === generation &&
+      !loadTerritoryDraft(id)?.operations.length
+    )
+      background.confirmResource("territories");
+  }
+  async function syncWholeProfile() {
     setProfileSyncing(true);
     setProfileSyncError("");
     setProfileSyncSuccess(false);
-
     try {
-      if (readOnlyDmRefresh) {
-        // A DM viewing another player's character must never use the player's
-        // write-sync path. Instead perform an authoritative read-only refresh
-        // and cache that character so reopening the app does not come back empty.
-        clearRetainerDraft(characterId);
-        clearTerritoryDraft(characterId);
-
-        const refreshed = await loadSheetData(characterId);
-        if (selectedCharacterIdRef.current !== characterId) return;
-        applySheetData(refreshed, false);
-        saveCachedSheetData(refreshed);
-
-        selectedCharacterIdRef.current = characterId;
-        setSelectedCharacterId(characterId);
-        setProfileLastSyncedAt(new Date().toISOString());
-        setProfileSyncSuccess(true);
-        window.setTimeout(() => setProfileSyncSuccess(false), 4000);
-        setDataStatus("connected");
-        return;
-      }
-      // Account permissions are account-level state, not character-tab state.
-      // Refresh them first so a DM change such as enabling Territories becomes
-      // effective on the player's next explicit Sync Character.
-      const accountState = await loadAccountRoster();
-      if (selectedCharacterIdRef.current !== characterId) return;
-      setCurrentPlayer(accountState.currentPlayer);
-      setPlayers(accountState.players || []);
-      setCharacters(accountState.characters || []);
-      setPermissions(accountPermissions(accountState.currentPlayer));
-      saveSharedRosterCache({
-        currentPlayer: accountState.currentPlayer,
-        players: accountState.players || [],
-        characters: accountState.characters || [],
-      });
-
-      // Some characters (most noticeably DM-owned characters created/used
-      // before the per-character cache existed) can have no bootstrap cache at
-      // all. Partial Sync Character reads update the screen, but all of the
-      // cache persistence helpers previously no-op'd when cacheBaseRef was null.
-      //
-      // Seed a valid character-specific cache before the tab refreshes below.
-      // Journal/Retainers/Territories then overwrite their portions with the
-      // authoritative results from this sync.
-      if (
-        !cacheBaseRef.current ||
-        cacheBaseRef.current.selectedCharacterId !== characterId
-      ) {
-        const localWallet = loadLocalWalletState(characterId);
-        const seededBase: SheetBootstrap = {
-          ok: true,
-          campaignName,
-          coinWeightPerPound: 10,
-          discordWebhookConfigured,
-          currentPlayer: accountState.currentPlayer,
-          players: accountState.players || [],
-          permissions: accountPermissions(accountState.currentPlayer),
-          customMissions: customMissions || [],
-          characters: accountState.characters || [],
-          selectedCharacterId: characterId,
-          balance: localWallet?.balance || { pp: 0, gp: 0, sp: 0, cp: 0 },
-          transactions: [],
-          territories: territories || [],
-          managedTerritories: managedTerritories || [],
-          retainers: retainers || [],
-          scoutingMissions: scoutingMissions || [],
-          territoryHexes: territoryHexes || [],
-          journal: journalEntries || [],
-          recurringExpenses: localWallet?.recurringExpenses || [],
-        };
-        cacheBaseRef.current = seededBase;
-        saveCachedSheetData(seededBase);
-      }
-
-      const remoteRevisions = await loadTabSyncRevisions(characterId);
-      if (selectedCharacterIdRef.current !== characterId) return;
-      const acceptedRevisions = loadAcceptedTabSyncRevisions(characterId);
-      const dmOverrides = {
-        wallet: false,
-        journal: remoteRevisions.journal > acceptedRevisions.journal,
-        retainers: remoteRevisions.retainers > acceptedRevisions.retainers,
-        territories:
-          remoteRevisions.territories > acceptedRevisions.territories,
-      };
-
-      let overrideData: SheetBootstrap | null = null;
-      if (
-        dmOverrides.journal ||
-        dmOverrides.retainers ||
-        dmOverrides.territories
-      ) {
-        overrideData = await loadSheetData(characterId);
-        if (selectedCharacterIdRef.current !== characterId) return;
-      }
-
-      // Journal is Sheet-backed. Refresh it on every explicit Sync Character
-      // instead of only when a DM revision changed, otherwise entries created
-      // on another device or lost from local cache never return.
-      const refreshedJournal =
-        dmOverrides.journal && overrideData
-          ? { journal: overrideData.journal || [] }
-          : await loadJournalData(characterId);
-      if (selectedCharacterIdRef.current !== characterId) return;
-      setJournalEntries(refreshedJournal.journal || []);
-      persistJournalCache(refreshedJournal.journal || []);
-
-      if (dmOverrides.retainers && overrideData) {
-        clearRetainerDraft(characterId);
-        setRetainers(overrideData.retainers || []);
-        setRetainerDraftDirty(false);
-        setRetainerLastSyncedAt(new Date().toISOString());
-        if (cacheBaseRef.current) {
-          const updatedBase: SheetBootstrap = {
-            ...cacheBaseRef.current,
-            retainers: overrideData.retainers || [],
-          };
-          cacheBaseRef.current = updatedBase;
-          saveCachedSheetData(updatedBase);
-        }
-      }
-
-      if (dmOverrides.territories && overrideData) {
-        clearTerritoryDraft(characterId);
-        reconcileLocalScoutingTimersWithAuthoritative(
-          characterId,
-          overrideData.scoutingMissions || [],
-        );
-        const refreshedTerritories = overrideData.territories || [];
-        const refreshedScouting = overrideData.scoutingMissions || [];
-        const refreshedCustom = overrideData.customMissions || [];
-        const refreshedHexes = overrideData.territoryHexes || [];
-        setTerritories(refreshedTerritories);
-        setScoutingMissions(refreshedScouting);
-        setCustomMissions(refreshedCustom);
-        setTerritoryHexes(refreshedHexes);
-        setTerritoryDraftDirty(false);
-        setTerritoryLastSyncedAt(new Date().toISOString());
-        persistTerritoryCache({
-          territories: refreshedTerritories,
-          scoutingMissions: refreshedScouting,
-          customMissions: refreshedCustom,
-          territoryHexes: refreshedHexes,
-        });
-      }
-
-      saveAcceptedTabSyncRevisions(characterId, remoteRevisions);
-
-      if (!dmOverrides.retainers && loadRetainerDraft(characterId)) {
-        await syncRetainersToCampaign();
-        if (selectedCharacterIdRef.current !== characterId) return;
-      }
-
-      if (!dmOverrides.retainers) {
-        const refreshedRetainers = await loadRetainerData(characterId);
-        if (selectedCharacterIdRef.current !== characterId) return;
-        clearRetainerDraft(characterId);
-        setRetainers(refreshedRetainers.retainers || []);
-        setRetainerDraftDirty(false);
-        setRetainerLastSyncedAt(new Date().toISOString());
-
-        // Save the Sheet-backed result immediately. If the player closes the
-        // app right after Sync Character, startup must not restore an older
-        // cached Retainers/Fighting Forces snapshot.
-        if (cacheBaseRef.current) {
-          const updatedBase: SheetBootstrap = {
-            ...cacheBaseRef.current,
-            retainers: refreshedRetainers.retainers || [],
-          };
-          cacheBaseRef.current = updatedBase;
-          saveCachedSheetData(updatedBase);
-        }
-      }
-
-      if (!dmOverrides.territories) {
-        const territoryDraft = loadTerritoryDraft(characterId);
-        if (territoryDraft?.operations.length) {
-          // syncTerritoryData() sends queued local operations and finishes with
-          // an authoritative Territory-status read.
-          await syncTerritoryData();
-          if (selectedCharacterIdRef.current !== characterId) return;
-        } else {
-          // Territory is Sheet-backed. An explicit Sync Character must always
-          // refresh it, even when no DM revision changed. This is especially
-          // important for DM-owned characters whose local cache may be absent
-          // or stale after reopening.
-          const refreshedTerritoryData = await loadTerritoryStatus(characterId);
-          if (selectedCharacterIdRef.current !== characterId) return;
-          clearTerritoryDraft(characterId);
-          reconcileLocalScoutingTimersWithAuthoritative(
-            characterId,
-            refreshedTerritoryData.scoutingMissions || [],
-          );
-          const refreshedTerritories = refreshedTerritoryData.territories || [];
-          const refreshedScouting =
-            refreshedTerritoryData.scoutingMissions || [];
-          const refreshedCustom = refreshedTerritoryData.customMissions || [];
-          const refreshedHexes = refreshedTerritoryData.territoryHexes || [];
-          setTerritories(refreshedTerritories);
-          setScoutingMissions(refreshedScouting);
-          setCustomMissions(refreshedCustom);
-          setTerritoryHexes(refreshedHexes);
-          setTerritoryDraftDirty(false);
-          setTerritoryLastSyncedAt(new Date().toISOString());
-          persistTerritoryCache({
-            territories: refreshedTerritories,
-            scoutingMissions: refreshedScouting,
-            customMissions: refreshedCustom,
-            territoryHexes: refreshedHexes,
-          });
-        }
-      }
-
-      setProfileLastSyncedAt(new Date().toISOString());
-      setProfileSyncSuccess(true);
-      window.setTimeout(() => setProfileSyncSuccess(false), 4000);
-      setDataStatus("connected");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Could not sync this profile.";
-      setProfileSyncError(message);
-      throw error;
+      await background.refreshNow();
     } finally {
       setProfileSyncing(false);
     }
   }
 
   return {
+    background,
+    retainerProgress,
+    territoryProgress,
+    journalProgress,
+    journalSyncing,
+    journalSyncError,
+    journalDraftDirty,
+    rosterReady,
+    loginOptionsStatus,
+    loginOptionsError,
+    retryLoginOptions,
     authenticated,
     passwordChangeToken,
     setCurrentPlayer,

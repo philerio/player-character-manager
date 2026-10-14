@@ -12,6 +12,8 @@ import { purseValueInCopper } from "../app/wallet";
 import { SOLDIER_MONTHLY_WAGES_GP, equipmentCatalog, RECRUIT_ARMOR_AC, RECRUIT_SHIELDS, recruitEquipmentRules, recruitWeaponOptions, recruitGearValidation } from "../app/catalog";
 
 export function TerritoriesView({
+  dataFresh = true,
+  retainersReady = true,
   actions,
   territories,
   fightingForces,
@@ -46,6 +48,8 @@ export function TerritoriesView({
   pushToSheetSuccess,
   onPushToSheet,
 }: {
+  dataFresh?: boolean;
+  retainersReady?: boolean;
   actions: TerritoryActions;
   territories: SheetTerritory[];
   fightingForces: SheetRetainer[];
@@ -113,13 +117,14 @@ export function TerritoriesView({
   const [managingTerritory, setManagingTerritory] = useState<SheetTerritory | null>(null);
   const [recruitingTerritory, setRecruitingTerritory] = useState<SheetTerritory | null>(null);
   const [savingTitheId, setSavingTitheId] = useState("");
+  useEffect(() => { setViewingMap(null); setViewingMissions(null); setManagingTerritory(null); setRecruitingTerritory(null); }, [characterId]);
 
   async function changeChurchTithe(territory: SheetTerritory, payChurchTithe: boolean) {
     if (Boolean(territory.payChurchTithe) === payChurchTithe) return;
     setSavingTitheId(territory.territoryId);
     try {
       onTitheChanged({ ...territory, payChurchTithe, updatedAt: new Date().toISOString() });
-    } finally {
+    } catch { /* Local storage failure is shown by the persistent save-status banner. */ } finally {
       setSavingTitheId("");
     }
   }
@@ -138,11 +143,11 @@ export function TerritoriesView({
       </div>
       <div className="territory-sync-bar" aria-live="polite">
         <div className="territory-sync-status">
-          <strong>{hasUnsyncedChanges ? "Unsynced territory changes" : "Territory data synced"}</strong>
+          <strong>{hasUnsyncedChanges ? "Unsynced territory changes" : dataFresh ? "Territory data confirmed" : "Saved territory working copy"}</strong>
           <small>
             {hasUnsyncedChanges
-              ? isDm ? "Local territory changes have not been sent." : "Changes and new orders are stored on this device until you press Sync with Sheet."
-              : lastSyncedAt
+              ? isDm ? "Local territory changes have not been sent." : "Changes are saved on this device and sent automatically when connected."
+              : !dataFresh ? "Showing data saved on this device. Campaign updates appear after a successful refresh." : lastSyncedAt
                 ? `Last synced ${new Date(lastSyncedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
                 : "Working copy matches the campaign data."}
           </small>
@@ -161,8 +166,10 @@ export function TerritoriesView({
             </>
           )}
         </div>
+        {!isDm && <button className="secondary-action" disabled={syncing} onClick={() => void onRefresh().catch(() => {})}>Refresh and replace local edits</button>}
         {syncError && <p className="form-error territory-sync-error">{syncError}</p>}
       </div>
+      {!retainersReady && <p className="data-refresh-note" role="status">Loading fighting forces… Mission and recruitment options will be available when they are ready.</p>}
       <div className="territory-list">
         {territories.map((territory) => (
           <article className="ornamental-card territory-card" key={territory.territoryId}>
@@ -211,13 +218,13 @@ export function TerritoriesView({
                     <button type="button" className={territory.payChurchTithe ? "active" : ""} disabled={savingTitheId === territory.territoryId} onClick={() => void changeChurchTithe(territory, true)}>Yes</button>
                   </div>
                 </div>
-                <button className="primary-action territory-missions" onClick={() => setViewingMissions(territory)}>
+                <button disabled={!retainersReady} className="primary-action territory-missions" onClick={() => setViewingMissions(territory)}>
                   <Timer size={16} /> <span>Active Missions</span>
                 </button>
-                <button className="primary-action territory-manage" onClick={() => setManagingTerritory(territory)}>
+                <button disabled={!retainersReady} className="primary-action territory-manage" onClick={() => setManagingTerritory(territory)}>
                   <Landmark size={16} /> <span>Manage Territory</span>
                 </button>
-                <button className="primary-action territory-recruit" onClick={() => setRecruitingTerritory(territory)}>
+                <button disabled={!retainersReady} className="primary-action territory-recruit" onClick={() => setRecruitingTerritory(territory)}>
                   <Sword size={16} /> <span>Recruit Fighting Men</span>
                 </button>
               </div>
@@ -247,6 +254,7 @@ export function TerritoriesView({
           hasUnsyncedChanges={hasUnsyncedChanges}
           territory={viewingMap}
           territoryHexes={territoryHexes.filter((hex) => hex.territoryId === viewingMap.territoryId)}
+          troopsReady={retainersReady}
           fightingForces={fightingForces}
           missions={scoutingMissions.filter((mission) => mission.territoryId === viewingMap.territoryId)}
           customMissions={customMissions}
@@ -363,6 +371,7 @@ function TerritoryManagementPanel({ actions, mode, territory, character, charact
   const [decisionAction, setDecisionAction] = useState<"recruit" | "deny" | null>(null);
   const [forceId, setForceId] = useState("");
   const [newForceName, setNewForceName] = useState("");
+  useEffect(() => { if (forceId && !fightingForces.some(force => force.retainerId === forceId)) setForceId(""); }, [fightingForces, forceId]);
   const [chosenSoldierType, setChosenSoldierType] = useState("");
   const [recruitArmor, setRecruitArmor] = useState("Unarmored");
   const [recruitWeapons, setRecruitWeapons] = useState<string[]>([]);
@@ -984,6 +993,7 @@ function driveImageSources(url?: string, fileId?: string, width = 2400) {
 }
 
 export function TapRevealTerritoryMap({
+  troopsReady = true,
   startUnlocking = false,
   onPushToSheet,
   pushingToSheet = false,
@@ -999,6 +1009,7 @@ export function TapRevealTerritoryMap({
   onViewResults,
   onClose,
 }: {
+  troopsReady?: boolean;
   startUnlocking?: boolean;
   onPushToSheet?: () => Promise<void>;
   pushingToSheet?: boolean;
@@ -1065,9 +1076,17 @@ export function TapRevealTerritoryMap({
       return { key, force, troop, available };
     }).filter((item) => item.available >= 10),
   );
+  const troopSignature = availableTroops.map(item => `${item.key}:${item.available}`).join("|");
   const availableMen = availableTroops.reduce((sum, item) => sum + item.available, 0);
   const [missionHex, setMissionHex] = useState<TapRevealPoint | null>(null);
   const [allocations, setAllocations] = useState<Record<string, number>>({});
+  useEffect(() => {
+    const available = new Map(availableTroops.map(item => [item.key, item.available]));
+    setAllocations(previous => {
+      const next = Object.fromEntries(Object.entries(previous).filter(([key]) => available.has(key)).map(([key, men]) => [key, Math.min(Math.floor(men / 10) * 10, available.get(key)!)]));
+      return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+    });
+  }, [troopSignature]);
   const [startingMission, setStartingMission] = useState(false);
   const [revealingHex, setRevealingHex] = useState(false);
   const [unlockMode, setUnlockMode] = useState(isDm && startUnlocking);
@@ -1405,7 +1424,8 @@ export function TapRevealTerritoryMap({
                     </select>
                   </label>
                 ))}
-                {!availableTroops.length && <p className="empty-ledger">No complete, unassigned squads of 10 are available.</p>}
+                {!troopsReady && <p role="status">Loading fighting forces…</p>}
+                {troopsReady && !availableTroops.length && <p className="empty-ledger">No complete, unassigned squads of 10 are available.</p>}
               </div>
               <div className={`scouting-total ${selectedMen >= 10 && selectedMen % 10 === 0 ? "ready" : ""}`}>
                 <span>Mission strength</span><strong>{selectedMen} soldiers · {selectedMen / 10 || 0} squad{selectedMen === 10 ? "" : "s"}</strong>
@@ -1443,6 +1463,7 @@ export function TapRevealTerritoryMap({
                 <button
                   className="primary-action"
                   disabled={
+                    !troopsReady ||
                     startingMission ||
                     revealingHex ||
                     selectedMen < 10 ||

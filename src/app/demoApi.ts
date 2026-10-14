@@ -229,6 +229,8 @@ export async function demoRequest(
           throw new Error("Demo journal entry not found.");
         const entry = {
           ...previous,
+          clientMutationId:
+            input.clientMutationId || previous?.clientMutationId,
           entryId: previous?.entryId || uuid(),
           characterId: id,
           playerId: snapshot.currentPlayer.playerId,

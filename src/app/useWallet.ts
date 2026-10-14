@@ -1,3 +1,6 @@
+import { AppError } from "./errors";
+import { loadLocalWalletState } from "./wallet";
+import { validateWalletBackup } from "./validation";
 import type { AppModal } from "./core";
 import { recurringOccurrenceDate } from "./wallet";
 
@@ -29,6 +32,7 @@ import {
 import type { Dispatch, SetStateAction, RefObject } from "react";
 
 type WalletContext = {
+  characterLoadRequestRef?: RefObject<number>;
   selectedCharacterIdRef: RefObject<string>;
   selectedCharacter: SheetCharacter | undefined;
   setModal: Dispatch<SetStateAction<AppModal>>;
@@ -284,13 +288,29 @@ export function useWallet(
       return;
 
     const characterId = selectedCharacter.characterId;
+    const generation = getContext().characterLoadRequestRef?.current;
+    const before = JSON.stringify(loadLocalWalletState(characterId));
     setWalletBackupBusy("restore");
     setWalletBackupMessage("");
     setWalletBackupError("");
 
     try {
       const result = await loadLocalWalletBackup(characterId);
-      if (selectedCharacterIdRef.current !== characterId) return;
+      if (
+        selectedCharacterIdRef.current !== characterId ||
+        getContext().characterLoadRequestRef?.current !== generation
+      )
+        return;
+      if (JSON.stringify(loadLocalWalletState(characterId)) !== before)
+        throw new AppError(
+          "conflict",
+          "New wallet edits were made while restoring. They are preserved. Review the ledger and confirm restore again if you still want to replace them.",
+        );
+      validateWalletBackup(
+        result.transactions,
+        result.recurringExpenses,
+        characterId,
+      );
       const restoredTransactions = Array.isArray(result.transactions)
         ? (result.transactions as unknown as Transaction[])
         : [];
@@ -309,7 +329,7 @@ export function useWallet(
         savedAt: new Date().toISOString(),
       };
 
-      saveLocalWalletState(restoredState);
+      saveLocalWalletState(restoredState, true);
       walletLoadedCharacterIdRef.current = characterId;
       setTransactions(restoredTransactions);
       setRecurringExpenses(restoredRecurring);
@@ -318,7 +338,11 @@ export function useWallet(
       setSilver(restoredBalance.sp);
       setCopper(restoredBalance.cp);
 
-      if (selectedCharacterIdRef.current !== characterId) return;
+      if (
+        selectedCharacterIdRef.current !== characterId ||
+        getContext().characterLoadRequestRef?.current !== generation
+      )
+        return;
       const when = result.backedUpAt
         ? new Date(result.backedUpAt).toLocaleString()
         : "the saved backup";

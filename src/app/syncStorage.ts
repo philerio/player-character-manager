@@ -1,6 +1,7 @@
 import { appStorage } from "./storage";
 
 import {
+  getDraftScope,
   getSessionToken,
   type SheetTabSyncRevisions,
 } from "../google-sheets-api";
@@ -15,7 +16,7 @@ const EMPTY_TAB_SYNC_REVISIONS: SheetTabSyncRevisions = {
 };
 
 function tabSyncRevisionStorageKey(characterId: string) {
-  return `${TAB_SYNC_REVISION_PREFIX}${getSessionToken() || "guest"}:${characterId}`;
+  return `${TAB_SYNC_REVISION_PREFIX}${getDraftScope()}:${characterId}`;
 }
 
 export function loadAcceptedTabSyncRevisions(
@@ -24,7 +25,11 @@ export function loadAcceptedTabSyncRevisions(
   if (!characterId || typeof window === "undefined")
     return { ...EMPTY_TAB_SYNC_REVISIONS };
   try {
-    const raw = appStorage.getItem(tabSyncRevisionStorageKey(characterId));
+    const raw =
+      appStorage.getItem(tabSyncRevisionStorageKey(characterId)) ||
+      appStorage.getItem(
+        `${TAB_SYNC_REVISION_PREFIX}${getSessionToken() || "guest"}:${characterId}`,
+      );
     if (!raw) return { ...EMPTY_TAB_SYNC_REVISIONS };
     const parsed = JSON.parse(raw) as Partial<SheetTabSyncRevisions>;
     return {

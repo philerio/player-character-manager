@@ -1,3 +1,5 @@
+import { validateResponse } from "./app/validation";
+import { requestCampaign, cancelAllReads } from "./app/transport";
 import { isDemoMode } from "./app/runtime";
 import { demoRequest, getDemoBootstrap } from "./app/demoApi";
 import { appStorage } from "./app/storage";
@@ -41,6 +43,8 @@ export type SheetTransaction = {
 };
 
 export type SheetJournalEntry = {
+  syncPending?: boolean;
+  clientMutationId?: string;
   entryId: string;
   characterId: string;
   title: string;
@@ -69,6 +73,7 @@ export type SheetRecurringExpense = {
 };
 
 export type SheetRetainer = {
+  clientMutationId?: string;
   retainerId: string;
   characterId: string;
   name: string;
@@ -312,6 +317,7 @@ export type SheetTabSyncRevisions = {
 };
 
 export type SheetBootstrap = {
+  loadedTabs?: SheetSyncTab[];
   ok: boolean;
   error?: string;
   campaignName: string;
@@ -360,7 +366,7 @@ const SCRIPT_URL = isDemoMode
   ? "https://demo.invalid/sheets"
   : import.meta.env.VITE_APPS_SCRIPT_URL?.trim() || "";
 function requestSheet(url: string, options?: RequestInit) {
-  return isDemoMode ? demoRequest(url, options) : fetch(url, options);
+  return requestCampaign(url, options, isDemoMode ? demoRequest : fetch);
 }
 const ACCESS_KEY = import.meta.env.VITE_PCM_ACCESS_KEY?.trim() || "";
 const SESSION_KEY = "pcm-session-token";
@@ -407,6 +413,15 @@ type SharedRosterCache = {
   players: SheetPlayer[];
   characters: SheetCharacter[];
 };
+
+export function getDraftScope() {
+  return (
+    appStorage.getItem("pcm-draft-account") ||
+    loadSharedRosterCache()?.currentPlayer.playerId ||
+    getSessionToken() ||
+    "anonymous"
+  );
+}
 
 function sharedRosterCacheKey(fingerprint = sessionFingerprint()) {
   return `${SHARED_ROSTER_CACHE_PREFIX}${fingerprint}`;
@@ -465,6 +480,7 @@ export function saveSharedRosterCache(input: {
     characters: input.characters || [],
   };
   try {
+    appStorage.setItem("pcm-draft-account", input.currentPlayer.playerId);
     appStorage.setItem(
       sharedRosterCacheKey(fingerprint),
       JSON.stringify(cached),
@@ -501,6 +517,11 @@ export function loadCachedSheetData(
       cached.playerId !== cached.data.currentPlayer.playerId
     )
       return null;
+    validateResponse(
+      "bootstrap",
+      cached.data,
+      resolvedCharacterId === "none" ? undefined : resolvedCharacterId,
+    );
     const sharedRoster = loadSharedRosterCache();
     return sharedRoster
       ? {
@@ -515,7 +536,7 @@ export function loadCachedSheetData(
   }
 }
 
-export function saveCachedSheetData(data: SheetBootstrap) {
+export function saveCachedSheetData(data: SheetBootstrap, makeLatest = true) {
   const token = getSessionToken();
   const characterId = data.selectedCharacterId || "none";
   if (!token || !data.ok || !data.currentPlayer?.playerId) return;
@@ -533,7 +554,8 @@ export function saveCachedSheetData(data: SheetBootstrap) {
       bootstrapCacheKey(characterId, fingerprint),
       JSON.stringify(envelope),
     );
-    appStorage.setItem(latestBootstrapCacheKey(fingerprint), characterId);
+    if (makeLatest)
+      appStorage.setItem(latestBootstrapCacheKey(fingerprint), characterId);
   } catch {
     // A full or unavailable cache must never prevent the live app from working.
   }
@@ -557,6 +579,12 @@ export function getSessionToken() {
 }
 
 export function clearSession() {
+  try {
+    appStorage.setItem("pcm-draft-account", getDraftScope());
+  } catch {
+    /* Storage feedback preserves an in-memory rescue copy. */
+  }
+  cancelAllReads();
   appStorage.removeItem(SESSION_KEY);
   clearBootstrapCache();
 }
@@ -704,6 +732,7 @@ export async function loadSheetData(
 ): Promise<SheetBootstrap> {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
 
+  const requestSession = getSessionToken();
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "bootstrap");
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
@@ -722,14 +751,7 @@ export async function loadSheetData(
   const data = (await response.json()) as SheetBootstrap;
   if (!data.ok)
     throw new Error(data.error || "Could not load Google Sheets data.");
-  if (data.currentPlayer?.playerId) {
-    saveSharedRosterCache({
-      currentPlayer: data.currentPlayer,
-      players: data.players || [],
-      characters: data.characters || [],
-    });
-  }
-  saveCachedSheetData(data);
+  if (getSessionToken() === requestSession) saveCachedSheetData(data, false);
   return data;
 }
 
@@ -759,6 +781,7 @@ async function postSheetAction<T>(
 
 export async function loadAccountRoster() {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  const requestSession = getSessionToken();
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "account-roster");
   url.searchParams.set("sessionToken", getSessionToken());
@@ -779,11 +802,12 @@ export async function loadAccountRoster() {
     players: SheetPlayer[];
     characters: SheetCharacter[];
   };
-  saveSharedRosterCache({
-    currentPlayer: result.currentPlayer,
-    players: result.players || [],
-    characters: result.characters || [],
-  });
+  if (getSessionToken() === requestSession)
+    saveSharedRosterCache({
+      currentPlayer: result.currentPlayer,
+      players: result.players || [],
+      characters: result.characters || [],
+    });
   return result;
 }
 
@@ -1086,6 +1110,7 @@ export async function updateRecurringExpense(input: {
 
 export async function saveRetainer(input: {
   characterId: string;
+  clientMutationId?: string;
   type: "individual" | "force";
   name: string;
   role: string;
@@ -1296,6 +1321,7 @@ export async function startScoutingMission(input: {
 
 export async function createCustomMission(input: {
   characterId: string;
+  clientMutationId?: string;
   territoryId: string;
   objective: string;
   missionLocation: string;
@@ -1585,6 +1611,7 @@ export async function deleteSheetCharacter(characterId: string) {
 
 export async function saveJournalEntry(input: {
   characterId: string;
+  clientMutationId?: string;
   title: string;
   tags: string[];
   notes: string;
@@ -1593,6 +1620,7 @@ export async function saveJournalEntry(input: {
     "journal.create",
     {
       characterId: input.characterId,
+      clientMutationId: input.clientMutationId,
       title: input.title,
       category: input.tags.join(", "),
       notes: input.notes,

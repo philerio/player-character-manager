@@ -27,6 +27,8 @@ export function CharacterModal({
     level: number;
   }) => Promise<void>;
 }) {
+  const [ownerId, setOwnerId] = useState(currentPlayer?.playerId || players.find(player => player.active)?.playerId || "");
+  useEffect(() => { if (ownerId && !players.some(player => player.playerId === ownerId && player.active)) setOwnerId(""); }, [players, ownerId]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -38,6 +40,7 @@ export function CharacterModal({
     try {
       const targetPlayerId = String(data.get("targetPlayerId") || "").trim();
       const selectedOwner = players.find((player) => player.playerId === targetPlayerId);
+      if (isDm && (!selectedOwner || !selectedOwner.active)) throw new Error("This player is no longer available. Choose a player from the current roster.");
       await onSave({
         playerName: isDm
           ? selectedOwner?.displayName || currentPlayer?.displayName || ""
@@ -83,13 +86,14 @@ export function CharacterModal({
               Player
               <select
                 name="targetPlayerId"
-                defaultValue={currentPlayer?.playerId || players[0]?.playerId || ""}
+                value={ownerId}
+                onChange={event => setOwnerId(event.target.value)}
                 autoFocus
                 required
               >
                 <option value="" disabled>Select a player</option>
                 {players.map((player) => (
-                  <option value={player.playerId} key={player.playerId}>
+                  <option disabled={!player.active} value={player.playerId} key={player.playerId}>
                     {player.displayName || player.playerId}
                   </option>
                 ))}

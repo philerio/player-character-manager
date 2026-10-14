@@ -1,3 +1,9 @@
+import {
+  ResourceFeedback,
+  WorkflowStatus,
+  StorageFeedback,
+  ActionFailureFeedback,
+} from "./DataFeedback";
 import { useAccountCommands } from "../app/useAccountCommands";
 import { territoryActions } from "../app/territoryActions";
 import { useTerritoryCommands } from "../app/useTerritoryCommands";
@@ -72,6 +78,17 @@ export function AppShell({
     onSaveHex,
   } = useTerritoryCommands(controller);
   const {
+    background,
+    retainerProgress,
+    territoryProgress,
+    journalProgress,
+    journalSyncing,
+    journalSyncError,
+    journalDraftDirty,
+    rosterReady,
+    loginOptionsStatus,
+    loginOptionsError,
+    retryLoginOptions,
     authenticated,
     passwordChangeToken,
     setCurrentPlayer,
@@ -194,6 +211,9 @@ export function AppShell({
     ) : (
       <LoginScreen
         players={loginOptions}
+        optionsStatus={loginOptionsStatus}
+        optionsError={loginOptionsError}
+        onRetryOptions={retryLoginOptions}
         onLogin={onLogin}
         onRegister={onRegister}
         onLoadRecoveryQuestion={onLoadRecoveryQuestion}
@@ -353,7 +373,7 @@ export function AppShell({
                         }
                         title={
                           permissions.isDm && !dmOwnsSelectedCharacter
-                            ? "Sync Character is used by the character's player. Use Refresh Player Data for another player's character."
+                            ? "Campaign data refreshes in the background. Use Refresh Player Data to explicitly replace a local DM working copy."
                             : profileSyncError
                               ? profileSyncError
                               : profileSyncSuccess
@@ -365,7 +385,7 @@ export function AppShell({
                           void syncWholeProfile().catch(() => undefined);
                         }}
                       >
-                        {profileSyncing ? "Syncing…" : "Sync Character"}
+                        {profileSyncing ? "Refreshing…" : "Refresh now"}
                       </button>
                     </div>
                   )}
@@ -477,7 +497,7 @@ export function AppShell({
                           void syncWholeProfile().catch(() => undefined);
                         }}
                       >
-                        {profileSyncing ? "Syncing…" : "Sync Character"}
+                        {profileSyncing ? "Refreshing…" : "Refresh now"}
                       </button>
                     </div>
                   )}
@@ -548,15 +568,15 @@ export function AppShell({
             <div className="player-chip">
               <UserRound size={21} />
               <span>
-                {dataStatus === "connected"
-                  ? "Sheet connected"
-                  : dataStatus === "cached"
-                    ? "Local copy"
-                    : dataStatus === "loading"
-                      ? "Connecting…"
-                      : dataStatus === "error"
-                        ? "Sheet unavailable"
-                        : "Demo data"}
+                {isDemoMode
+                  ? "Demo data"
+                  : !background.online
+                    ? "Offline · Local copy"
+                    : background.refreshing
+                      ? "Refreshing campaign…"
+                      : background.error
+                        ? "Campaign unavailable"
+                        : "Saved working copy"}
               </span>
             </div>
             {hasSheetsConnection() && !isDemoMode && (
@@ -568,6 +588,45 @@ export function AppShell({
         </header>
 
         <div className="page-content">
+          <StorageFeedback />
+          <ActionFailureFeedback />
+          {selectedCharacterId && (
+            <WorkflowStatus
+              confirmed={Object.values(background.resources).every(
+                (state) => state.status === "ready",
+              )}
+              online={background.online}
+              busy={
+                background.refreshing ||
+                retainerSyncing ||
+                territorySyncing ||
+                journalSyncing ||
+                profileSyncing
+              }
+              phase={background.phase}
+              error={
+                background.error ||
+                retainerSyncError ||
+                territorySyncError ||
+                journalSyncError ||
+                profileSyncError
+              }
+              pending={
+                retainerDraftDirty || territoryDraftDirty || journalDraftDirty
+              }
+              dm={permissions.isDm && !dmOwnsSelectedCharacter}
+              progress={
+                retainerSyncing
+                  ? retainerProgress
+                  : territorySyncing
+                    ? territoryProgress
+                    : journalSyncing
+                      ? journalProgress
+                      : null
+              }
+              refresh={syncWholeProfile}
+            />
+          )}
           {section === "wallet" && (
             <WalletView
               platinum={platinum}
@@ -590,88 +649,111 @@ export function AppShell({
             />
           )}
           {section === "territories" && (
-            <TerritoriesView
-              actions={territoryActions}
-              territories={territories}
-              fightingForces={retainers.filter((item) => item.type === "force")}
-              officerRetainers={retainers.filter(
-                (item) => item.type === "individual",
-              )}
-              scoutingMissions={scoutingMissions}
-              customMissions={customMissions}
-              territoryHexes={territoryHexes}
-              characterName={selectedCharacter?.name || ""}
-              character={selectedCharacter}
-              characterId={selectedCharacter?.characterId || ""}
-              balances={{ pp: platinum, gp: gold, sp: silver, cp: copper }}
-              isDm={interfaceIsDm}
-              hasUnsyncedChanges={territoryDraftDirty}
-              syncing={territorySyncing}
-              syncError={territorySyncError}
-              lastSyncedAt={territoryLastSyncedAt}
-              onRefresh={refreshTerritoryDataFromCampaign}
-              pushingToSheet={dmTabPushing === "territories"}
-              pushToSheetSuccess={dmTabPushSuccess === "territories"}
-              onPushToSheet={() => pushDmTabToSheet("territories")}
-              onRecruitmentComplete={onRecruitmentComplete}
-              onFieldAllocationSaved={onFieldAllocationSaved}
-              onTitheChanged={onTitheChanged}
-              onAdd={onAdd}
-              onEdit={onEdit}
-              onRevealHex={onRevealHex}
-              onStartScouting={onStartScouting}
-              onCreateCustomMission={onCreateCustomMission}
-              onCompleteScoutingForTesting={onCompleteScoutingForTesting}
-              onPromoteScoutingSerjeants={onPromoteScoutingSerjeants}
-              onViewScoutingResults={onViewScoutingResults}
-              onDismissScoutingResult={onDismissScoutingResult}
-              onSaveHex={onSaveHex}
-            />
+            <ResourceFeedback
+              name="territories"
+              state={background.resources.territories}
+              retry={() => background.retryResource("territories")}
+            >
+              <TerritoriesView
+                actions={territoryActions}
+                retainersReady={background.resources.retainers.hasData}
+                dataFresh={background.resources.territories.status === "ready"}
+                territories={territories}
+                fightingForces={retainers.filter(
+                  (item) => item.type === "force",
+                )}
+                officerRetainers={retainers.filter(
+                  (item) => item.type === "individual",
+                )}
+                scoutingMissions={scoutingMissions}
+                customMissions={customMissions}
+                territoryHexes={territoryHexes}
+                characterName={selectedCharacter?.name || ""}
+                character={selectedCharacter}
+                characterId={selectedCharacter?.characterId || ""}
+                balances={{ pp: platinum, gp: gold, sp: silver, cp: copper }}
+                isDm={interfaceIsDm}
+                hasUnsyncedChanges={territoryDraftDirty}
+                syncing={territorySyncing}
+                syncError={territorySyncError}
+                lastSyncedAt={territoryLastSyncedAt}
+                onRefresh={refreshTerritoryDataFromCampaign}
+                pushingToSheet={dmTabPushing === "territories"}
+                pushToSheetSuccess={dmTabPushSuccess === "territories"}
+                onPushToSheet={() => pushDmTabToSheet("territories")}
+                onRecruitmentComplete={onRecruitmentComplete}
+                onFieldAllocationSaved={onFieldAllocationSaved}
+                onTitheChanged={onTitheChanged}
+                onAdd={onAdd}
+                onEdit={onEdit}
+                onRevealHex={onRevealHex}
+                onStartScouting={onStartScouting}
+                onCreateCustomMission={onCreateCustomMission}
+                onCompleteScoutingForTesting={onCompleteScoutingForTesting}
+                onPromoteScoutingSerjeants={onPromoteScoutingSerjeants}
+                onViewScoutingResults={onViewScoutingResults}
+                onDismissScoutingResult={onDismissScoutingResult}
+                onSaveHex={onSaveHex}
+              />
+            </ResourceFeedback>
           )}
           {section === "journal" && (
-            <JournalView
-              characterName={selectedCharacter?.name || ""}
-              discordEnabled={Boolean(selectedCharacter?.discordConfigured)}
-              entries={journalEntries}
-              onAdd={() => {
-                setEditingJournalEntry(null);
-                setModal("journal-entry");
-              }}
-              onEdit={(entry) => {
-                setEditingJournalEntry(entry);
-                setModal("journal-entry");
-              }}
-              onSend={onSendJournal}
-              isDm={permissions.isDm}
-              pushingToSheet={dmTabPushing === "journal"}
-              pushToSheetSuccess={dmTabPushSuccess === "journal"}
-              onPushToSheet={() => pushDmTabToSheet("journal")}
-            />
+            <ResourceFeedback
+              name="journal"
+              state={background.resources.journal}
+              retry={() => background.retryResource("journal")}
+            >
+              <JournalView
+                characterName={selectedCharacter?.name || ""}
+                discordEnabled={Boolean(selectedCharacter?.discordConfigured)}
+                entries={journalEntries}
+                onAdd={() => {
+                  setEditingJournalEntry(null);
+                  setModal("journal-entry");
+                }}
+                onEdit={(entry) => {
+                  setEditingJournalEntry(entry);
+                  setModal("journal-entry");
+                }}
+                onSend={onSendJournal}
+                isDm={permissions.isDm}
+                pushingToSheet={dmTabPushing === "journal"}
+                pushToSheetSuccess={dmTabPushSuccess === "journal"}
+                onPushToSheet={() => pushDmTabToSheet("journal")}
+              />
+            </ResourceFeedback>
           )}
           {section === "retainers" && (
-            <RetainersView
-              retainers={retainers}
-              onAdd={(kind) => {
-                setEditingRetainer(null);
-                setRetainerKind(kind);
-                setModal("retainer");
-              }}
-              onEdit={(retainer) => {
-                setEditingRetainer(retainer);
-                setRetainerKind(retainer.type);
-                setModal("retainer");
-              }}
-              onDelete={removeRetainerRecord}
-              isDm={permissions.isDm}
-              hasUnsyncedChanges={retainerDraftDirty}
-              syncing={retainerSyncing}
-              syncError={retainerSyncError}
-              lastSyncedAt={retainerLastSyncedAt}
-              onRefresh={refreshRetainersFromCampaign}
-              pushingToSheet={dmTabPushing === "retainers"}
-              pushToSheetSuccess={dmTabPushSuccess === "retainers"}
-              onPushToSheet={() => pushDmTabToSheet("retainers")}
-            />
+            <ResourceFeedback
+              name="retainers"
+              state={background.resources.retainers}
+              retry={() => background.retryResource("retainers")}
+            >
+              <RetainersView
+                dataFresh={background.resources.retainers.status === "ready"}
+                retainers={retainers}
+                onAdd={(kind) => {
+                  setEditingRetainer(null);
+                  setRetainerKind(kind);
+                  setModal("retainer");
+                }}
+                onEdit={(retainer) => {
+                  setEditingRetainer(retainer);
+                  setRetainerKind(retainer.type);
+                  setModal("retainer");
+                }}
+                onDelete={removeRetainerRecord}
+                isDm={permissions.isDm}
+                hasUnsyncedChanges={retainerDraftDirty}
+                syncing={retainerSyncing}
+                syncError={retainerSyncError}
+                lastSyncedAt={retainerLastSyncedAt}
+                onRefresh={refreshRetainersFromCampaign}
+                pushingToSheet={dmTabPushing === "retainers"}
+                pushToSheetSuccess={dmTabPushSuccess === "retainers"}
+                onPushToSheet={() => pushDmTabToSheet("retainers")}
+              />
+            </ResourceFeedback>
           )}
           {section === "player-management" && permissions.playerManagement && (
             <PlayerManagementView
@@ -707,7 +789,39 @@ export function AppShell({
       </nav>
 
       {modal &&
-        (modal === "character" ? (
+        (["retainer", "recurring-expenses"].includes(modal) &&
+        !background.resources.retainers.hasData ? (
+          <div className="modal-backdrop">
+            <div className="modal">
+              <ResourceFeedback
+                name="retainers"
+                state={background.resources.retainers}
+                retry={() => background.retryResource("retainers")}
+              >
+                {null}
+              </ResourceFeedback>
+              <button onClick={() => setModal(null)}>Close</button>
+            </div>
+          </div>
+        ) : modal === "character" && !rosterReady ? (
+          <div className="modal-backdrop">
+            <div className="modal">
+              <h2>
+                {rosterRefreshing
+                  ? "Loading players…"
+                  : "Player roster unavailable"}
+              </h2>
+              <p>
+                {rosterRefreshError ||
+                  "Load the campaign roster before choosing a player."}
+              </p>
+              <button onClick={() => void refreshRoster().catch(() => {})}>
+                Retry loading players
+              </button>
+              <button onClick={() => setModal(null)}>Close</button>
+            </div>
+          </div>
+        ) : modal === "character" ? (
           <CharacterModal
             canClose={characters.length > 0}
             isDm={permissions.isDm}

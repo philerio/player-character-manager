@@ -1,0 +1,549 @@
+import { loadJournalDraft } from "./journalStorage";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
+import {
+  clearSession,
+  loadCachedSheetData,
+  saveCachedSheetData,
+  loadAccountRoster,
+  loadJournalData,
+  loadRetainerData,
+  loadTerritoryStatus,
+  loadTabSyncRevisions,
+  type SheetBootstrap,
+  type SheetCharacter,
+  type SheetPlayer,
+  type SheetRetainer,
+  type SheetTerritory,
+  type SheetTerritoryHex,
+  type SheetScoutingMission,
+  type SheetCustomMission,
+  type SheetJournalEntry,
+} from "../google-sheets-api";
+import { loadRetainerDraft } from "./retainerStorage";
+import { loadTerritoryDraft } from "./territoryStorage";
+import {
+  loadAcceptedTabSyncRevisions,
+  saveAcceptedTabSyncRevisions,
+} from "./syncStorage";
+import { hasStorageFailure } from "./storage";
+import { cancelCharacterReads } from "./transport";
+import { AppError, errorMessage } from "./errors";
+
+export type ResourceName = "journal" | "retainers" | "territories";
+export type ResourceState = {
+  status: "idle" | "loading" | "cached" | "ready" | "error";
+  hasData: boolean;
+  error: string;
+  updatedAt: string;
+};
+export type Resources = Record<ResourceName, ResourceState>;
+const blank = (): ResourceState => ({
+  status: "idle",
+  hasData: false,
+  error: "",
+  updatedAt: "",
+});
+const names: ResourceName[] = ["journal", "retainers", "territories"];
+type Context = {
+  selectedCharacterIdRef: RefObject<string>;
+  characterLoadRequestRef: RefObject<number>;
+  cacheBaseRef: RefObject<SheetBootstrap | null>;
+  selectedCharacter: SheetCharacter | undefined;
+  currentPlayer: SheetPlayer | null;
+  permissions: SheetBootstrap["permissions"];
+  setRosterReady: Dispatch<SetStateAction<boolean>>;
+  setRosterRefreshing: Dispatch<SetStateAction<boolean>>;
+  setRosterRefreshError: Dispatch<SetStateAction<string>>;
+  setAuthenticated: Dispatch<SetStateAction<boolean>>;
+  setCurrentPlayer: Dispatch<SetStateAction<SheetPlayer | null>>;
+  setPlayers: Dispatch<SetStateAction<SheetPlayer[]>>;
+  setCharacters: Dispatch<SetStateAction<SheetCharacter[]>>;
+  setPermissions: Dispatch<SetStateAction<SheetBootstrap["permissions"]>>;
+  accountPermissions: (
+    player: SheetPlayer | null | undefined,
+  ) => SheetBootstrap["permissions"];
+  setJournalEntries: Dispatch<SetStateAction<SheetJournalEntry[]>>;
+  setRetainers: Dispatch<SetStateAction<SheetRetainer[]>>;
+  setTerritories: Dispatch<SetStateAction<SheetTerritory[]>>;
+  setManagedTerritories: Dispatch<SetStateAction<SheetTerritory[]>>;
+  setScoutingMissions: Dispatch<SetStateAction<SheetScoutingMission[]>>;
+  setCustomMissions: Dispatch<SetStateAction<SheetCustomMission[]>>;
+  setTerritoryHexes: Dispatch<SetStateAction<SheetTerritoryHex[]>>;
+  syncJournalToCampaign: () => Promise<void>;
+  syncRetainersToCampaign: (force?: boolean) => Promise<void>;
+  syncTerritoryData: () => Promise<void>;
+};
+export function useBackgroundSync(
+  getContext: () => Context,
+  {
+    characterId,
+    authenticated,
+    retainerDirty,
+    territoryDirty,
+    journalDirty,
+  }: {
+    characterId: string;
+    authenticated: boolean;
+    retainerDirty: boolean;
+    territoryDirty: boolean;
+    journalDirty: boolean;
+  },
+) {
+  const contextRef = useRef(getContext);
+  contextRef.current = getContext;
+  const [states, setStates] = useState<Record<string, Resources>>({});
+  const stateRef = useRef(states);
+  stateRef.current = states;
+  const [online, setOnline] = useState(
+    typeof navigator === "undefined" || navigator.onLine,
+  );
+  const [refreshing, setRefreshing] = useState(false);
+  const [phase, setPhase] = useState("");
+  const [error, setError] = useState("");
+  const lock = useRef<Promise<void> | null>(null);
+  const generation = useRef(0);
+  const lastCheck = useRef(0);
+  const ready = useRef(false);
+  const update = (
+    id: string,
+    name: ResourceName,
+    patch: Partial<ResourceState>,
+  ) =>
+    setStates((previous) => {
+      const current = previous[id] || {
+        journal: blank(),
+        retainers: blank(),
+        territories: blank(),
+      };
+      const next = {
+        ...previous,
+        [id]: { ...current, [name]: { ...current[name], ...patch } },
+      };
+      stateRef.current = next;
+      return next;
+    });
+  const run = useCallback(
+    async ({
+      force = false,
+      flush = true,
+      only,
+    }: {
+      force?: boolean;
+      flush?: boolean;
+      only?: ResourceName;
+    } = {}): Promise<void> => {
+      const ctx = contextRef.current();
+      const id = ctx.selectedCharacterIdRef.current;
+      if (!authenticated || !id) return;
+      if (lock.current) {
+        await lock.current;
+        if (ctx.selectedCharacterIdRef.current !== id) return;
+        return run({ force, flush, only });
+      }
+      const requestGeneration = generation.current,
+        selection = ctx.characterLoadRequestRef.current;
+      const current = () =>
+        generation.current === requestGeneration &&
+        ctx.selectedCharacterIdRef.current === id &&
+        ctx.characterLoadRequestRef.current === selection;
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setOnline(false);
+        setError(
+          "Offline. Showing saved data; pending changes will sync when connected.",
+        );
+        for (const name of names)
+          if (!stateRef.current[id]?.[name]?.hasData)
+            update(id, name, {
+              status: "error",
+              error:
+                "This data is not available on this device yet. Reconnect to load it.",
+            });
+        return;
+      }
+      const work = async () => {
+        if (current()) {
+          setRefreshing(true);
+          setError("");
+          setPhase("Checking campaign updates…");
+        }
+        try {
+          let player = ctx.currentPlayer;
+          if (force) {
+            ctx.setRosterRefreshing(true);
+            try {
+              const account = await loadAccountRoster();
+              if (!current()) return;
+              if (!account.characters.some((row) => row.characterId === id))
+                throw new AppError(
+                  "conflict",
+                  "This character is no longer in the campaign roster. The local working copy is kept; choose another character or contact the DM.",
+                );
+              if (!ctx.cacheBaseRef.current) {
+                const base: SheetBootstrap = {
+                  ok: true,
+                  loadedTabs: [],
+                  campaignName: "Campaign",
+                  coinWeightPerPound: 10,
+                  discordWebhookConfigured: false,
+                  currentPlayer: account.currentPlayer,
+                  players: account.players,
+                  permissions: ctx.accountPermissions(account.currentPlayer),
+                  characters: account.characters,
+                  selectedCharacterId: id,
+                  balance: { pp: 0, gp: 0, sp: 0, cp: 0 },
+                  transactions: [],
+                  recurringExpenses: [],
+                  retainers: [],
+                  territories: [],
+                  territoryHexes: [],
+                  scoutingMissions: [],
+                  customMissions: [],
+                  journal: [],
+                };
+                ctx.cacheBaseRef.current = base;
+                saveCachedSheetData(base);
+              }
+              player = account.currentPlayer;
+              ctx.setCurrentPlayer(player);
+              ctx.setPlayers(account.players);
+              ctx.setCharacters(account.characters);
+              ctx.setPermissions(ctx.accountPermissions(player));
+              ctx.setRosterReady(true);
+              ctx.setRosterRefreshError("");
+            } catch (reason) {
+              ctx.setRosterRefreshError(errorMessage(reason));
+              throw reason;
+            } finally {
+              ctx.setRosterRefreshing(false);
+            }
+          }
+          const revisions = await loadTabSyncRevisions(id);
+          if (!current()) return;
+          const accepted = loadAcceptedTabSyncRevisions(id);
+          const mayWrite =
+            player?.role !== "dm" ||
+            ctx.selectedCharacter?.playerId === player?.playerId;
+          const failures: string[] = [];
+          for (const name of names) {
+            if (only && name !== only) continue;
+            if (!current()) return;
+            const draft =
+              name === "retainers"
+                ? loadRetainerDraft(id)
+                : name === "territories"
+                  ? loadTerritoryDraft(id)
+                  : loadJournalDraft(id);
+            const dirty =
+              name === "retainers"
+                ? Boolean(draft)
+                : name === "territories"
+                  ? Boolean(loadTerritoryDraft(id)?.operations.length)
+                  : Boolean(loadJournalDraft(id)?.operations.length);
+            if (dirty && revisions[name] > accepted[name]) {
+              const message =
+                "The DM published a newer campaign copy. Your local edits are preserved. Review it before choosing to refresh and replace your edits.";
+              update(id, name, { status: "error", error: message });
+              failures.push(message);
+              continue;
+            }
+            if (
+              dirty &&
+              flush &&
+              mayWrite &&
+              !hasStorageFailure() &&
+              (force || !stateRef.current[id]?.[name]?.error)
+            ) {
+              setPhase(`Sending pending ${name} changes…`);
+              try {
+                await (name === "retainers"
+                  ? ctx.syncRetainersToCampaign()
+                  : name === "territories"
+                    ? ctx.syncTerritoryData()
+                    : ctx.syncJournalToCampaign());
+              } catch (reason) {
+                if (reason instanceof AppError && reason.code === "session")
+                  throw reason;
+                const message = errorMessage(reason);
+                update(id, name, { status: "error", error: message });
+                failures.push(message);
+                continue;
+              }
+              if (!current()) return;
+            }
+            const pending =
+              name === "retainers"
+                ? Boolean(loadRetainerDraft(id))
+                : name === "territories"
+                  ? Boolean(loadTerritoryDraft(id)?.operations.length)
+                  : Boolean(loadJournalDraft(id)?.operations.length);
+            // Never refresh over a working draft, including edits made while a write was in flight.
+            if (pending) continue;
+            const state = stateRef.current[id]?.[name];
+            const stale =
+              !state?.updatedAt ||
+              Date.now() - new Date(state.updatedAt).getTime() > 120_000;
+            if (
+              !force &&
+              !stale &&
+              state?.hasData &&
+              revisions[name] <= accepted[name]
+            )
+              continue;
+            const draftBefore = JSON.stringify(
+              name === "retainers"
+                ? loadRetainerDraft(id)
+                : name === "territories"
+                  ? loadTerritoryDraft(id)
+                  : loadJournalDraft(id),
+            );
+            update(id, name, { status: "loading", error: "" });
+            setPhase(`Refreshing ${name}…`);
+            try {
+              const result =
+                name === "journal"
+                  ? await loadJournalData(id)
+                  : name === "retainers"
+                    ? await loadRetainerData(id)
+                    : await loadTerritoryStatus(id);
+              if (!current()) return;
+              const draftAfter = JSON.stringify(
+                name === "retainers"
+                  ? loadRetainerDraft(id)
+                  : name === "territories"
+                    ? loadTerritoryDraft(id)
+                    : loadJournalDraft(id),
+              );
+              if (draftBefore !== draftAfter) {
+                update(id, name, { status: "cached", hasData: true });
+                continue;
+              }
+              const live = contextRef.current();
+              let patch: Partial<SheetBootstrap>;
+              if (name === "journal") {
+                const journal = (
+                  result as Awaited<ReturnType<typeof loadJournalData>>
+                ).journal;
+                live.setJournalEntries(journal);
+                patch = { journal };
+              } else if (name === "retainers") {
+                const retainers = (
+                  result as Awaited<ReturnType<typeof loadRetainerData>>
+                ).retainers;
+                live.setRetainers(retainers);
+                patch = { retainers };
+              } else {
+                const territory = result as Awaited<
+                  ReturnType<typeof loadTerritoryStatus>
+                >;
+                live.setTerritories(territory.territories);
+                live.setScoutingMissions(territory.scoutingMissions);
+                live.setCustomMissions(territory.customMissions || []);
+                live.setTerritoryHexes(territory.territoryHexes);
+                patch = {
+                  territories: territory.territories,
+                  scoutingMissions: territory.scoutingMissions,
+                  customMissions: territory.customMissions || [],
+                  territoryHexes: territory.territoryHexes,
+                };
+              }
+              const base = live.cacheBaseRef.current || loadCachedSheetData(id);
+              if (base?.selectedCharacterId === id) {
+                const next = {
+                  ...base,
+                  ...patch,
+                  loadedTabs: [
+                    ...new Set([
+                      ...(base.loadedTabs ??
+                        ([
+                          "wallet",
+                          "journal",
+                          "retainers",
+                          "territories",
+                        ] as const)),
+                      name,
+                    ]),
+                  ],
+                };
+                live.cacheBaseRef.current = next;
+                saveCachedSheetData(next);
+              }
+              accepted[name] = revisions[name];
+              saveAcceptedTabSyncRevisions(id, accepted);
+              update(id, name, {
+                status: "ready",
+                hasData: true,
+                updatedAt: new Date().toISOString(),
+                error: "",
+              });
+            } catch (reason) {
+              if (!current()) return;
+              if (reason instanceof AppError && reason.code === "session")
+                throw reason;
+              const message = errorMessage(reason);
+              update(id, name, { status: "error", error: message });
+              failures.push(message);
+            }
+          }
+          if (current()) {
+            ready.current = true;
+            lastCheck.current = Date.now();
+            if (failures.length) setError(failures[0]);
+          }
+        } catch (reason) {
+          if (!current()) return;
+          if (reason instanceof AppError && reason.code === "cancelled") return;
+          const message = errorMessage(reason);
+          setError(message);
+          if (reason instanceof AppError && reason.code === "session") {
+            clearSession();
+            ctx.setAuthenticated(false);
+          }
+          for (const name of names)
+            if (!stateRef.current[id]?.[name]?.hasData)
+              update(id, name, { status: "error", error: message });
+        } finally {
+          if (current()) {
+            setRefreshing(false);
+            setPhase("");
+          }
+        }
+      };
+      const promise = work();
+      lock.current = promise;
+      try {
+        await promise;
+      } finally {
+        if (lock.current === promise) lock.current = null;
+      }
+    },
+    [authenticated],
+  );
+
+  useEffect(() => {
+    generation.current++;
+    ready.current = false;
+    lock.current = null;
+    setRefreshing(false);
+    setError("");
+    if (!characterId || !authenticated) return;
+    const cache = loadCachedSheetData(characterId);
+    const cached = (name: ResourceName) =>
+      Boolean(
+        cache &&
+        (cache.loadedTabs === undefined || cache.loadedTabs.includes(name)),
+      );
+    const resources: Resources = {
+      journal: blank(),
+      retainers: blank(),
+      territories: blank(),
+    };
+    for (const name of names) {
+      const hasData =
+        cached(name) ||
+        (name === "retainers" && Boolean(loadRetainerDraft(characterId))) ||
+        (name === "territories" && Boolean(loadTerritoryDraft(characterId))) ||
+        (name === "journal" && Boolean(loadJournalDraft(characterId)));
+      resources[name] = {
+        ...blank(),
+        hasData,
+        status: hasData ? "cached" : "loading",
+      };
+    }
+    setStates((previous) => {
+      const next = { ...previous, [characterId]: resources };
+      stateRef.current = next;
+      return next;
+    });
+    void run({ force: true, flush: false });
+    return () => {
+      generation.current++;
+      cancelCharacterReads(characterId);
+    };
+  }, [characterId, authenticated, run]);
+  useEffect(() => {
+    if (
+      !characterId ||
+      !authenticated ||
+      refreshing ||
+      error ||
+      (!retainerDirty && !territoryDirty && !journalDirty)
+    )
+      return;
+    const timer = setTimeout(() => {
+      if (ready.current) void run({ flush: true });
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [
+    characterId,
+    authenticated,
+    retainerDirty,
+    territoryDirty,
+    journalDirty,
+    states,
+    refreshing,
+    error,
+    run,
+  ]);
+  useEffect(() => {
+    const onlineNow = () => {
+      setOnline(true);
+      void run({ force: true });
+    };
+    const offlineNow = () => {
+      setOnline(false);
+    };
+    const focus = () => {
+      if (
+        document.visibilityState !== "hidden" &&
+        Date.now() - lastCheck.current > 10_000
+      )
+        void run();
+    };
+    window.addEventListener("online", onlineNow);
+    window.addEventListener("offline", offlineNow);
+    window.addEventListener("focus", focus);
+    document.addEventListener("visibilitychange", focus);
+    const timer = setInterval(focus, 30_000);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", onlineNow);
+      window.removeEventListener("offline", offlineNow);
+      window.removeEventListener("focus", focus);
+      document.removeEventListener("visibilitychange", focus);
+    };
+  }, [run]);
+  const confirmResource = (name: ResourceName) => {
+    if (!characterId) return;
+    update(characterId, name, {
+      status: "ready",
+      hasData: true,
+      error: "",
+      updatedAt: new Date().toISOString(),
+    });
+    setError("");
+  };
+  const resources = states[characterId] || {
+    journal: blank(),
+    retainers: blank(),
+    territories: blank(),
+  };
+  return {
+    confirmResource,
+    resources,
+    online,
+    refreshing,
+    phase,
+    error:
+      error || names.map((name) => resources[name].error).find(Boolean) || "",
+    refreshNow: () => run({ force: true }),
+    retryResource: (only: ResourceName) => run({ force: true, only }),
+  };
+}

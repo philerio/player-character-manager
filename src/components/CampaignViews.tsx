@@ -79,6 +79,7 @@ export function JournalView({
                   </button>
                 </div>
                 <h2>{entry.title}</h2>
+                {entry.syncPending && <p className="data-refresh-note">Saved locally · Waiting to sync</p>}
                 <p className={expanded ? "journal-note expanded" : "journal-note"}>
                   {expanded || !isLong ? entry.notes : `${entry.notes.slice(0, 240).trimEnd()}…`}
                 </p>
@@ -246,6 +247,7 @@ export function JournalEntryModal({
 }
 
 export function RetainersView({
+  dataFresh = true,
   retainers,
   onAdd,
   onEdit,
@@ -260,6 +262,7 @@ export function RetainersView({
   pushToSheetSuccess,
   onPushToSheet,
 }: {
+  dataFresh?: boolean;
   retainers: SheetRetainer[];
   onAdd: (kind: "individual" | "force") => void;
   onEdit: (retainer: SheetRetainer) => void;
@@ -367,7 +370,7 @@ export function RetainersView({
                   onClick={() => {
                     const action = kind === "force" ? "Disband" : "Fire";
                     if (window.confirm(`${action} ${retainer.name}? This will stop future recurring costs.`)) {
-                      void onDelete(retainer);
+                      void onDelete(retainer).catch(() => {});
                     }
                   }}
                 >
@@ -400,11 +403,11 @@ export function RetainersView({
       </div>
       <div className="retainer-sync-bar" aria-live="polite">
         <div className="retainer-sync-status">
-          <strong>{hasUnsyncedChanges ? "Unsynced changes" : "Retainers synced"}</strong>
+          <strong>{hasUnsyncedChanges ? "Unsynced changes" : dataFresh ? "Retainers confirmed" : "Saved retainer working copy"}</strong>
           <small>
             {hasUnsyncedChanges
-              ? isDm ? "Local changes have not been sent." : "Changes are stored on this device until you press Sync with Sheet."
-              : lastSyncedAt
+              ? isDm ? "Local changes have not been sent." : "Changes are saved on this device and sent automatically when connected."
+              : !dataFresh ? "Showing data saved on this device. Campaign updates appear after a successful refresh." : lastSyncedAt
                 ? `Last synced ${new Date(lastSyncedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
                 : "Working copy matches the campaign data."}
           </small>
@@ -429,6 +432,7 @@ export function RetainersView({
             </>
           )}
         </div>
+        {!isDm && <button className="secondary-action" disabled={syncing} onClick={() => void onRefresh().catch(() => {})}>Refresh and replace local edits</button>}
         {syncError && <p className="form-error retainer-sync-error">{syncError}</p>}
       </div>
       {section("individual", "Individual Retainers", "Henchmen, hirelings, specialists, officials, and other named followers.", individuals)}

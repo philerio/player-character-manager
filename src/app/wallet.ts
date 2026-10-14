@@ -286,7 +286,10 @@ export function loadLocalWalletState(
   }
 }
 
-export function saveLocalWalletState(state: LocalWalletState) {
+export function saveLocalWalletState(
+  state: LocalWalletState,
+  requireDurableSave = false,
+) {
   if (!state.characterId || typeof window === "undefined") return;
   try {
     const canonicalState: LocalWalletState = {
@@ -297,8 +300,9 @@ export function saveLocalWalletState(state: LocalWalletState) {
       localWalletStorageKey(state.characterId),
       JSON.stringify(canonicalState),
     );
-  } catch {
-    // Local wallet persistence must never crash the UI.
+  } catch (reason) {
+    if (requireDurableSave) throw reason;
+    // Local wallet persistence must never crash the UI; the storage-status banner reports the failure.
   }
 }
 

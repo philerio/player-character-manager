@@ -1,6 +1,7 @@
 import { appStorage } from "./storage";
 
 import {
+  getDraftScope,
   getSessionToken,
   type SheetTerritory,
   type SheetScoutingMission,
@@ -77,13 +78,14 @@ export type TerritoryLocalDraft = {
   customMissions: SheetCustomMission[];
   territoryHexes: SheetTerritoryHex[];
   operations: TerritoryLocalOperation[];
+  uncertainOperations?: string[];
   updatedAt: string;
 };
 
 const TERRITORY_DRAFT_PREFIX = "pcm-territory-draft:v1:";
 
 function territoryDraftKey(characterId: string) {
-  return `${TERRITORY_DRAFT_PREFIX}${getSessionToken() || "anonymous"}:${characterId}`;
+  return `${TERRITORY_DRAFT_PREFIX}${getDraftScope()}:${characterId}`;
 }
 
 export function loadTerritoryDraft(
@@ -91,7 +93,11 @@ export function loadTerritoryDraft(
 ): TerritoryLocalDraft | null {
   if (!characterId || typeof window === "undefined") return null;
   try {
-    const raw = appStorage.getItem(territoryDraftKey(characterId));
+    const raw =
+      appStorage.getItem(territoryDraftKey(characterId)) ||
+      appStorage.getItem(
+        `${TERRITORY_DRAFT_PREFIX}${getSessionToken() || "anonymous"}:${characterId}`,
+      );
     if (!raw) return null;
     const parsed = JSON.parse(raw) as TerritoryLocalDraft;
     if (
@@ -120,6 +126,9 @@ export function saveTerritoryDraft(draft: TerritoryLocalDraft) {
 export function clearTerritoryDraft(characterId: string) {
   if (!characterId || typeof window === "undefined") return;
   appStorage.removeItem(territoryDraftKey(characterId));
+  appStorage.removeItem(
+    `${TERRITORY_DRAFT_PREFIX}${getSessionToken() || "anonymous"}:${characterId}`,
+  );
 }
 
 export function localMissionStamp() {
@@ -356,4 +365,41 @@ export function migrateExistingScoutingTimers(
   });
 
   if (changed) saveLocalScoutingTimers(characterId, nextTimers);
+}
+
+export function acknowledgeTerritoryOperation(
+  characterId: string,
+  operation: TerritoryLocalOperation,
+  mission?: SheetScoutingMission | SheetCustomMission,
+) {
+  const latest = loadTerritoryDraft(characterId);
+  if (!latest)
+    throw new Error("The territory draft disappeared during synchronization.");
+  const localId = "localMissionId" in operation ? operation.localMissionId : "";
+  const replace = <T extends SheetScoutingMission | SheetCustomMission>(
+    items: T[],
+  ): T[] =>
+    mission
+      ? items.map((row) =>
+          row.missionId === localId ? ({ ...row, ...mission } as T) : row,
+        )
+      : items;
+  const next = {
+    ...latest,
+    operations: latest.operations.filter((row) => row.id !== operation.id),
+    uncertainOperations: latest.uncertainOperations?.filter(
+      (id) => id !== operation.id,
+    ),
+    scoutingMissions:
+      operation.kind === "scouting-start"
+        ? replace(latest.scoutingMissions)
+        : latest.scoutingMissions,
+    customMissions:
+      operation.kind === "custom-start"
+        ? replace(latest.customMissions)
+        : latest.customMissions,
+    updatedAt: new Date().toISOString(),
+  };
+  saveTerritoryDraft(next);
+  return next;
 }

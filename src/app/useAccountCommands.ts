@@ -118,11 +118,20 @@ export function useAccountCommands(controller: AccountContext) {
   };
 
   const onSignOut: ComponentProps<"button">["onClick"] = () => {
-    const { setAuthenticated, setCharacters } = controller;
-    void logout().finally(() => {
-      setAuthenticated(false);
-      setCharacters([]);
-    });
+    const {
+      setAuthenticated,
+      setCharacters,
+      selectedCharacterIdRef,
+      setSelectedCharacterId,
+    } = controller;
+    void logout()
+      .catch(() => {})
+      .finally(() => {
+        selectedCharacterIdRef.current = "";
+        setSelectedCharacterId("");
+        setAuthenticated(false);
+        setCharacters([]);
+      });
   };
 
   const onSendJournal: ComponentProps<typeof JournalView>["onSend"] = async (
@@ -131,6 +140,10 @@ export function useAccountCommands(controller: AccountContext) {
     const { selectedCharacter } = controller;
 
     if (!selectedCharacter) throw new Error("Select a character first.");
+    if (entry.syncPending || entry.entryId.startsWith("local-"))
+      throw new Error(
+        "Wait for this journal entry to sync before sending it to Discord.",
+      );
     await sendJournalEntryToDiscord({
       characterId: selectedCharacter.characterId,
       entryId: entry.entryId,

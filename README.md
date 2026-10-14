@@ -75,7 +75,11 @@ and authorization remain the backend's responsibility.
 
 - `src/App.tsx`: connects the app controller to the shell.
 - `src/components/AppShell.tsx`: navigation, header, screen selection, and modals.
-- `src/app/useAppController.ts`: cached startup and cross-feature synchronization.
+- `src/app/useAppController.ts`: saved startup and feature composition.
+- `src/app/useBackgroundSync.ts`: resource readiness, safe background reads, and automatic sync.
+- `src/app/transport.ts`, `errors.ts`, `validation.ts`: bounded requests, error types, and runtime validation.
+- `src/app/journalStorage.ts`: durable journal operations and acknowledgements.
+- `src/components/DataFeedback.tsx`: loading, progress, retry, and storage recovery feedback.
 - `src/app/useAccountCommands.ts`: login, password and journal-send callbacks.
 - `src/app/useSession.ts`: account state, roster, character selection and profile actions.
 - `src/app/useWallet.ts`: local ledger, purchases, recurring expenses and backups.
@@ -95,19 +99,59 @@ the module that owns the behavior. Feature hooks receive context getters so an
 action can read the other feature state from its render without introducing
 circular module dependencies.
 
-## Synchronization rules
+## Data loading and synchronization
 
-| Data or action                      | Behavior                                                                                                                                                                           |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Startup and character selection     | Read local caches and drafts; selecting a character makes no Sheet request. A live session without an account roster cache may make one recovery roster request at startup.        |
-| Wallet                              | The local transaction ledger determines the purse. Changes and recurring charges stay on this device; backup and restore are explicit.                                             |
-| Hirelings and territories           | Edits persist as local drafts. Sync sends them; a confirmed authoritative refresh discards unsynced changes. Retainer sync checks remote edits against the draft's base.           |
-| Journal                             | Save, edit and delete use the service immediately; explicit profile sync refreshes the journal.                                                                                    |
-| DM pushes                           | Explicitly publish the selected tab and advance its authoritative revision. Players apply relevant revisions on their next sync. Wallet revisions do not replace the local ledger. |
-| Scouting dispatch                   | Save a local mission/timer and send a targeted DM notification.                                                                                                                    |
-| Due scouting                        | Automatically submit expired local timers, including when reopening the app. The timer check runs every 30 seconds.                                                                |
-| Uploads and campaign administration | Explicit service actions.                                                                                                                                                          |
+The app shows each character's saved working copy immediately and refreshes the
+campaign data in the background. Unknown datasets show a loading indicator;
+dropdowns and actions requiring them stay unavailable until the data is ready.
+A successful empty result is displayed separately from a failed or unfinished
+request. Cached content stays usable during refreshes and connection failures.
 
-Slow character-specific reads are checked against the current selection before
-updating the screen. Regression tests cover refresh/restore responses arriving
-after switching characters and preservation of local drafts across reopening.
+Ordinary **Save** actions persist hireling, territory, and journal changes on the
+device first. Players and DM-owned characters send pending changes automatically
+after a short 2.5-second delay. The app checks for updates when selecting a
+character, returning to the app, and reconnecting. While visible it checks
+revisions every 30 seconds; unchanged datasets are only fetched again after a
+two-minute freshness window. **Refresh now** is available when an immediate
+check is useful, but routine edits do not require a Sync click.
+
+| Data or action                                      | Behavior                                                                                                                                                                                                                     |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wallet                                              | The local ledger determines the purse. Backup and restore remain explicit; background refresh never replaces it.                                                                                                             |
+| Hirelings and territories                           | Durable drafts are synchronized a change at a time. New edits made while syncing remain pending.                                                                                                                             |
+| Journal                                             | Save, edit, and delete are queued locally, including offline. Notes cannot be sent to Discord until confirmed by the campaign.                                                                                               |
+| DM editing another player's character               | Drafts remain local until the explicit **Push to Sheet** action publishes them.                                                                                                                                              |
+| Campaign conflicts                                  | Preserve local edits and show an actionable error. A confirmed **Refresh and replace local edits** fetches replacement data before discarding anything. Download a working-copy backup before replacing drafts you may need. |
+| Scouting dispatch                                   | Saves the mission/timer and sends a targeted DM notification; this action requires a live connection.                                                                                                                        |
+| Due scouting                                        | Submits expired local timers, including when reopening the app.                                                                                                                                                              |
+| Uploads, account administration, and backup restore | Explicit service actions; failed forms retain their inputs.                                                                                                                                                                  |
+
+The persistent status bar distinguishes saved local changes, pending work,
+synchronization progress, confirmed campaign data, offline use, and errors.
+Known operation counts use a progress bar; waiting on an unknown-duration
+request uses an indeterminate indicator. Each failed dataset has its own retry
+control. Character-specific requests are fenced against the selection's
+generation, including A → B → A switching.
+
+Reads have a 20-second timeout, deduplicate simultaneous requests, and retry
+transient failures once. Writes are not blindly retried by the transport.
+Successful mutations are checkpointed immediately; a failed later operation
+cannot resend already acknowledged creations. Responses and restored wallet
+backups are validated before replacing the working copy.
+
+The external Apps Script backend is not part of this repository. Stable client
+mutation IDs are sent for queued creations. If a response is lost and the
+backend cannot return that ID with its record, the app stops that creation and
+asks for review instead of risking a duplicate. End-to-end deduplication and
+atomic conflict checks require backend support; a frontend check cannot close
+the race between reading a revision and writing to the server.
+
+If browser storage is full or unavailable, the app reports the problem and keeps
+an in-memory rescue copy of attempted writes. Keep the tab open and use
+**Download working copy** before leaving. **Retry saving locally** attempts to
+persist that copy. Export files omit session-token keys. A successful backend
+write is not presented as a durable local save when storage failed.
+
+Regression tests cover offline reconnection, automatic synchronization, partial
+success, edits during sync, failed refreshes, stale responses, dropdown readiness,
+invalid backups, timeouts, and storage failures.
