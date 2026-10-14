@@ -3,3 +3,7 @@ dist
 .env
 .env.local
 *.log
+
+# Live campaign workbook stays local; fixtures use synthetic records.
+playerData/
+*.tsbuildinfo

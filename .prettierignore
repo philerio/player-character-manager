@@ -1,0 +1,11 @@
+node_modules/
+dist/
+playerData/
+package-lock.json
+*.tsbuildinfo
+src/index.css
+src/hex-i2-data.ts
+src/components/AccountViews.tsx
+src/components/CampaignViews.tsx
+src/components/WalletViews.tsx
+src/components/TerritoryViews.tsx

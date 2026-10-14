@@ -5215,3 +5215,46 @@ button {
     white-space: normal;
   }
 }
+
+.demo-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #f7e7b8;
+  color: #3d2c18;
+  border-bottom: 1px solid #a98948;
+}
+.demo-banner a { color: inherit; text-decoration: underline; }
+.demo-banner button { padding: 0.3rem 0.6rem; }
+
+.dm-hex-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: #f4ead4;
+  border-bottom: 1px solid #c9b58d;
+}
+.dm-hex-toolbar label { display: flex; align-items: center; gap: 8px; }
+.dm-hex-toolbar select { min-width: 110px; padding: 7px; }
+.dm-hex-toolbar p, .dm-hex-toolbar [role="status"] { width: 100%; margin: 0; font-size: 13px; }
+.territory-hex-controls {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 4;
+}
+.territory-hex-controls polygon { fill: transparent; cursor: pointer; }
+.territory-hex-controls polygon.unlock-target { fill: rgba(255, 240, 180, .06); stroke: #d6bc79; stroke-width: .12; }
+.territory-hex-controls polygon:hover, .territory-hex-controls polygon:focus-visible { fill: rgba(255, 228, 137, .25); stroke: #ffe18b; stroke-width: .4; outline: none; }
+.territory-hex-controls polygon[aria-disabled="true"] { cursor: wait; }
+.territory-hex-controls text { fill: #fff3cc; stroke: #352b20; stroke-width: .08; paint-order: stroke; font: 2px sans-serif; pointer-events: none; }
+@media (max-width: 700px) {
+  .dm-hex-toolbar { padding: 12px; gap: 10px; }
+  .dm-hex-toolbar button { flex-grow: 1; }
+}

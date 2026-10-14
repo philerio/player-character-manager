@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:demo": "vite --mode demo",
+    "typecheck": "tsc -b && tsc --noEmit -p tsconfig.tests.json",
+    "format": "prettier --write src/app src/App.tsx src/components/AppShell.tsx src/google-sheets-api.ts tests vitest.config.ts README.md package.json tsconfig.tests.json",
+    "format:check": "prettier --check src/app src/App.tsx src/components/AppShell.tsx src/google-sheets-api.ts tests vitest.config.ts README.md package.json tsconfig.tests.json"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -15,10 +21,17 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^30.1.2",
+    "prettier": "^3.9.10",
     "typescript": "^5.9.3",
-    "vite": "^8.0.13"
+    "vite": "^8.0.13",
+    "vitest": "^5.0.4"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

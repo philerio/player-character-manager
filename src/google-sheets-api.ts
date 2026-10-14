@@ -1,3 +1,6 @@
+import { isDemoMode } from "./app/runtime";
+import { demoRequest, getDemoBootstrap } from "./app/demoApi";
+import { appStorage } from "./app/storage";
 export type SheetCharacter = {
   characterId: string;
   playerId: string;
@@ -119,7 +122,12 @@ export type SheetTerritory = {
   scoutingWebhookConfigured?: boolean;
   payChurchTithe?: boolean;
   population?: number;
-  assets?: Array<{ type: string; name: string; quantity: number; notes?: string }>;
+  assets?: Array<{
+    type: string;
+    name: string;
+    quantity: number;
+    notes?: string;
+  }>;
   active: boolean;
   createdAt: string;
   updatedAt?: string;
@@ -130,7 +138,10 @@ export async function updateTerritoryChurchTithe(input: {
   territoryId: string;
   payChurchTithe: boolean;
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory }>("territory.tithe.update", input);
+  return postSheetAction<{ ok: true; territory: SheetTerritory }>(
+    "territory.tithe.update",
+    input,
+  );
 }
 
 export type TerritoryRecruitmentOffer = {
@@ -215,7 +226,12 @@ export type SheetCustomMission = {
   startDate: string;
   durationDays: number;
   completesAt?: string;
-  allocations: Array<{ retainerId: string; forceName: string; soldierType: string; men: number }>;
+  allocations: Array<{
+    retainerId: string;
+    forceName: string;
+    soldierType: string;
+    men: number;
+  }>;
   men: number;
   officerRetainerId?: string;
   officerName?: string;
@@ -340,7 +356,12 @@ export type RegistrationResult = {
   passwordChangeToken: string;
 };
 
-const SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL?.trim() || "";
+const SCRIPT_URL = isDemoMode
+  ? "https://demo.invalid/sheets"
+  : import.meta.env.VITE_APPS_SCRIPT_URL?.trim() || "";
+function requestSheet(url: string, options?: RequestInit) {
+  return isDemoMode ? demoRequest(url, options) : fetch(url, options);
+}
 const ACCESS_KEY = import.meta.env.VITE_PCM_ACCESS_KEY?.trim() || "";
 const SESSION_KEY = "pcm-session-token";
 const BOOTSTRAP_CACHE_PREFIX = "pcm-bootstrap-cache:v1:";
@@ -366,7 +387,10 @@ function sessionFingerprint(token = getSessionToken()) {
   return (hash >>> 0).toString(36);
 }
 
-function bootstrapCacheKey(characterId: string, fingerprint = sessionFingerprint()) {
+function bootstrapCacheKey(
+  characterId: string,
+  fingerprint = sessionFingerprint(),
+) {
   return `${BOOTSTRAP_CACHE_PREFIX}${fingerprint}:${characterId || "none"}`;
 }
 
@@ -397,7 +421,11 @@ export function loadSharedRosterCache(): {
   if (!token) return null;
   const fingerprint = sessionFingerprint(token);
   try {
-    const raw = localStorage.getItem(sharedRosterCacheKey(fingerprint));
+    const raw = appStorage.getItem(sharedRosterCacheKey(fingerprint));
+    if (!raw && isDemoMode) {
+      const { currentPlayer, players, characters } = getDemoBootstrap();
+      return { currentPlayer, players, characters };
+    }
     if (!raw) return null;
     const cached = JSON.parse(raw) as SharedRosterCache;
     if (
@@ -407,7 +435,8 @@ export function loadSharedRosterCache(): {
       cached.playerId !== cached.currentPlayer.playerId ||
       !Array.isArray(cached.players) ||
       !Array.isArray(cached.characters)
-    ) return null;
+    )
+      return null;
     return {
       currentPlayer: cached.currentPlayer,
       players: cached.players,
@@ -436,21 +465,32 @@ export function saveSharedRosterCache(input: {
     characters: input.characters || [],
   };
   try {
-    localStorage.setItem(sharedRosterCacheKey(fingerprint), JSON.stringify(cached));
+    appStorage.setItem(
+      sharedRosterCacheKey(fingerprint),
+      JSON.stringify(cached),
+    );
   } catch {
     // Account-roster caching must never prevent the app from working.
   }
 }
 
-export function loadCachedSheetData(characterId?: string): SheetBootstrap | null {
+export function loadCachedSheetData(
+  characterId?: string,
+): SheetBootstrap | null {
   const token = getSessionToken();
   if (!token) return null;
   const fingerprint = sessionFingerprint(token);
-  const resolvedCharacterId = characterId || localStorage.getItem(latestBootstrapCacheKey(fingerprint)) || "";
-  if (!resolvedCharacterId) return null;
+  const resolvedCharacterId =
+    characterId ||
+    appStorage.getItem(latestBootstrapCacheKey(fingerprint)) ||
+    "";
+  if (!resolvedCharacterId)
+    return isDemoMode ? getDemoBootstrap(characterId) : null;
   try {
-    const raw = localStorage.getItem(bootstrapCacheKey(resolvedCharacterId, fingerprint));
-    if (!raw) return null;
+    const raw = appStorage.getItem(
+      bootstrapCacheKey(resolvedCharacterId, fingerprint),
+    );
+    if (!raw) return isDemoMode ? getDemoBootstrap(resolvedCharacterId) : null;
     const cached = JSON.parse(raw) as BootstrapCacheEnvelope;
     if (
       cached.version !== BOOTSTRAP_CACHE_VERSION ||
@@ -459,7 +499,8 @@ export function loadCachedSheetData(characterId?: string): SheetBootstrap | null
       !cached.data?.ok ||
       !cached.data.currentPlayer?.playerId ||
       cached.playerId !== cached.data.currentPlayer.playerId
-    ) return null;
+    )
+      return null;
     const sharedRoster = loadSharedRosterCache();
     return sharedRoster
       ? {
@@ -488,44 +529,49 @@ export function saveCachedSheetData(data: SheetBootstrap) {
     data,
   };
   try {
-    localStorage.setItem(bootstrapCacheKey(characterId, fingerprint), JSON.stringify(envelope));
-    localStorage.setItem(latestBootstrapCacheKey(fingerprint), characterId);
+    appStorage.setItem(
+      bootstrapCacheKey(characterId, fingerprint),
+      JSON.stringify(envelope),
+    );
+    appStorage.setItem(latestBootstrapCacheKey(fingerprint), characterId);
   } catch {
     // A full or unavailable cache must never prevent the live app from working.
   }
 }
 
 export function clearBootstrapCache() {
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index);
+  for (let index = appStorage.length - 1; index >= 0; index -= 1) {
+    const key = appStorage.key(index);
     if (
       key?.startsWith(BOOTSTRAP_CACHE_PREFIX) ||
       key?.startsWith(BOOTSTRAP_CACHE_LATEST_PREFIX) ||
       key?.startsWith(SHARED_ROSTER_CACHE_PREFIX)
     ) {
-      localStorage.removeItem(key);
+      appStorage.removeItem(key);
     }
   }
 }
 
 export function getSessionToken() {
-  return localStorage.getItem(SESSION_KEY) || "";
+  return isDemoMode ? "demo-session" : appStorage.getItem(SESSION_KEY) || "";
 }
 
 export function clearSession() {
-  localStorage.removeItem(SESSION_KEY);
+  appStorage.removeItem(SESSION_KEY);
   clearBootstrapCache();
 }
 
 function saveSessionToken(token: string) {
-  localStorage.setItem(SESSION_KEY, token);
+  appStorage.setItem(SESSION_KEY, token);
 }
 
 export function hasSheetsConnection() {
   return Boolean(SCRIPT_URL);
 }
 
-export async function loadTerritoryStatus(characterId: string): Promise<SheetTerritoryStatus> {
+export async function loadTerritoryStatus(
+  characterId: string,
+): Promise<SheetTerritoryStatus> {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
@@ -536,13 +582,15 @@ export async function loadTerritoryStatus(characterId: string): Promise<SheetTer
   url.searchParams.set("characterId", characterId);
   url.searchParams.set("_", String(Date.now()));
 
-  const response = await fetch(url.toString(), {
+  const response = await requestSheet(url.toString(), {
     redirect: "follow",
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = (await response.json()) as SheetTerritoryStatus;
-  if (!data.ok) throw new Error(data.error || "Could not refresh territory status.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not refresh territory status.");
   return data;
 }
 
@@ -561,14 +609,16 @@ export async function loadJournalData(characterId: string): Promise<{
   url.searchParams.set("sessionToken", getSessionToken());
   url.searchParams.set("_", String(Date.now()));
 
-  const response = await fetch(url.toString(), {
+  const response = await requestSheet(url.toString(), {
     method: "GET",
     cache: "no-store",
     redirect: "follow",
   });
   const data = await response.json();
   if (!response.ok || !data?.ok) {
-    throw new Error(data?.error || `Google Sheets returned ${response.status}.`);
+    throw new Error(
+      data?.error || `Google Sheets returned ${response.status}.`,
+    );
   }
   return data;
 }
@@ -588,7 +638,7 @@ export async function loadRetainerData(characterId: string): Promise<{
   url.searchParams.set("sessionToken", getSessionToken());
   url.searchParams.set("_", String(Date.now()));
 
-  const response = await fetch(url.toString(), {
+  const response = await requestSheet(url.toString(), {
     method: "GET",
     cache: "no-store",
     redirect: "follow",
@@ -600,8 +650,9 @@ export async function loadRetainerData(characterId: string): Promise<{
   return data;
 }
 
-
-export async function loadWalletData(characterId: string): Promise<SheetWalletData> {
+export async function loadWalletData(
+  characterId: string,
+): Promise<SheetWalletData> {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
@@ -612,17 +663,20 @@ export async function loadWalletData(characterId: string): Promise<SheetWalletDa
   url.searchParams.set("characterId", characterId);
   url.searchParams.set("_", String(Date.now()));
 
-  const response = await fetch(url.toString(), {
+  const response = await requestSheet(url.toString(), {
     redirect: "follow",
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = (await response.json()) as SheetWalletData;
   if (!data.ok) throw new Error(data.error || "Could not load wallet data.");
   return data;
 }
 
-export async function loadTabSyncRevisions(characterId: string): Promise<SheetTabSyncRevisions> {
+export async function loadTabSyncRevisions(
+  characterId: string,
+): Promise<SheetTabSyncRevisions> {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
@@ -633,17 +687,21 @@ export async function loadTabSyncRevisions(characterId: string): Promise<SheetTa
   url.searchParams.set("characterId", characterId);
   url.searchParams.set("_", String(Date.now()));
 
-  const response = await fetch(url.toString(), {
+  const response = await requestSheet(url.toString(), {
     redirect: "follow",
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not load tab sync revisions.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not load tab sync revisions.");
   return data.revisions as SheetTabSyncRevisions;
 }
 
-export async function loadSheetData(characterId?: string): Promise<SheetBootstrap> {
+export async function loadSheetData(
+  characterId?: string,
+): Promise<SheetBootstrap> {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
 
   const url = new URL(SCRIPT_URL);
@@ -655,13 +713,15 @@ export async function loadSheetData(characterId?: string): Promise<SheetBootstra
   // Bootstrap data must always reflect mutations that just completed.
   url.searchParams.set("_", String(Date.now()));
 
-  const response = await fetch(url.toString(), {
+  const response = await requestSheet(url.toString(), {
     redirect: "follow",
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = (await response.json()) as SheetBootstrap;
-  if (!data.ok) throw new Error(data.error || "Could not load Google Sheets data.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not load Google Sheets data.");
   if (data.currentPlayer?.playerId) {
     saveSharedRosterCache({
       currentPlayer: data.currentPlayer,
@@ -673,9 +733,12 @@ export async function loadSheetData(characterId?: string): Promise<SheetBootstra
   return data;
 }
 
-async function postSheetAction<T>(action: string, payload: Record<string, unknown>) {
+async function postSheetAction<T>(
+  action: string,
+  payload: Record<string, unknown>,
+) {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
-  const response = await fetch(SCRIPT_URL, {
+  const response = await requestSheet(SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -686,9 +749,11 @@ async function postSheetAction<T>(action: string, payload: Record<string, unknow
       ...payload,
     }),
   });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not update Google Sheets.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not update Google Sheets.");
   return data as T;
 }
 
@@ -699,10 +764,15 @@ export async function loadAccountRoster() {
   url.searchParams.set("sessionToken", getSessionToken());
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
   url.searchParams.set("_", String(Date.now()));
-  const response = await fetch(url.toString(), { redirect: "follow", cache: "no-store" });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  const response = await requestSheet(url.toString(), {
+    redirect: "follow",
+    cache: "no-store",
+  });
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not load the account roster.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not load the account roster.");
   const result = data as {
     ok: true;
     currentPlayer: SheetPlayer;
@@ -723,8 +793,9 @@ export async function loadPlayerRoster() {
   url.searchParams.set("action", "player-roster");
   url.searchParams.set("sessionToken", getSessionToken());
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
-  const response = await fetch(url.toString(), { redirect: "follow" });
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  const response = await requestSheet(url.toString(), { redirect: "follow" });
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
   if (!data.ok) throw new Error(data.error || "Could not refresh players.");
   return data as {
@@ -740,7 +811,7 @@ export async function loadLoginOptions() {
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "auth.options");
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
-  const response = await fetch(url.toString(), { redirect: "follow" });
+  const response = await requestSheet(url.toString(), { redirect: "follow" });
   const data = await response.json();
   if (!data.ok) throw new Error(data.error || "Could not load players.");
   return data.players as LoginOption[];
@@ -826,44 +897,64 @@ export async function markTabAuthoritative(input: {
   characterId: string;
   tab: SheetSyncTab;
 }) {
-  return postSheetAction<{ ok: true; tab: SheetSyncTab; revision: number; updatedAt: string }>(
-    "tab.push",
-    input,
-  );
+  return postSheetAction<{
+    ok: true;
+    tab: SheetSyncTab;
+    revision: number;
+    updatedAt: string;
+  }>("tab.push", input);
 }
 
 export async function updateCampaignName(campaignName: string) {
-  return postSheetAction<{ ok: true; campaignName: string }>("campaign.update", {
-    campaignName,
-  });
+  return postSheetAction<{ ok: true; campaignName: string }>(
+    "campaign.update",
+    {
+      campaignName,
+    },
+  );
 }
 
 export async function updatePlayerAccess(input: {
   targetPlayerId: string;
   territoriesEnabled: boolean;
 }) {
-  return postSheetAction<{ ok: true; player: SheetPlayer }>("player.access.update", input);
+  return postSheetAction<{ ok: true; player: SheetPlayer }>(
+    "player.access.update",
+    input,
+  );
 }
 
-export async function updateDiscordWebhook(targetPlayerId: string, webhookUrl: string) {
-  return postSheetAction<{ ok: true; configured: boolean }>("discord.webhook.update", {
-    targetPlayerId,
-    webhookUrl,
-  });
+export async function updateDiscordWebhook(
+  targetPlayerId: string,
+  webhookUrl: string,
+) {
+  return postSheetAction<{ ok: true; configured: boolean }>(
+    "discord.webhook.update",
+    {
+      targetPlayerId,
+      webhookUrl,
+    },
+  );
 }
 
 export async function updateCharacterDiscordThread(input: {
   characterId: string;
   threadId: string;
 }) {
-  return postSheetAction<{ ok: true; character: SheetCharacter }>("discord.thread.update", input);
+  return postSheetAction<{ ok: true; character: SheetCharacter }>(
+    "discord.thread.update",
+    input,
+  );
 }
 
 export async function sendJournalEntryToDiscord(input: {
   characterId: string;
   entryId: string;
 }) {
-  return postSheetAction<{ ok: true; messagesSent: number }>("journal.discord.send", input);
+  return postSheetAction<{ ok: true; messagesSent: number }>(
+    "journal.discord.send",
+    input,
+  );
 }
 
 export async function saveSheetTransaction(input: {
@@ -880,7 +971,7 @@ export async function saveSheetTransaction(input: {
 }) {
   if (!SCRIPT_URL) return null;
 
-  const response = await fetch(SCRIPT_URL, {
+  const response = await requestSheet(SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -901,9 +992,11 @@ export async function saveSheetTransaction(input: {
     }),
   });
 
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not save the transaction.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not save the transaction.");
   return data.transaction as SheetTransaction;
 }
 
@@ -935,7 +1028,10 @@ export async function deleteSheetTransaction(input: {
   characterId: string;
   transactionId: string;
 }) {
-  return postSheetAction<{ ok: true; transactionId: string }>("transaction.delete", input);
+  return postSheetAction<{ ok: true; transactionId: string }>(
+    "transaction.delete",
+    input,
+  );
 }
 
 export async function saveRecurringExpense(input: {
@@ -949,11 +1045,22 @@ export async function saveRecurringExpense(input: {
   cp: number;
   note?: string;
 }) {
-  return postSheetAction<{ ok: true; schedule: SheetRecurringExpense }>("recurring.create", input);
+  return postSheetAction<{ ok: true; schedule: SheetRecurringExpense }>(
+    "recurring.create",
+    input,
+  );
 }
 
-export async function cancelRecurringExpense(characterId: string, scheduleId: string) {
-  return postSheetAction<{ ok: true; scheduleId: string; sourceType?: string; sourceId?: string }>("recurring.cancel", {
+export async function cancelRecurringExpense(
+  characterId: string,
+  scheduleId: string,
+) {
+  return postSheetAction<{
+    ok: true;
+    scheduleId: string;
+    sourceType?: string;
+    sourceId?: string;
+  }>("recurring.cancel", {
     characterId,
     scheduleId,
   });
@@ -991,7 +1098,11 @@ export async function saveRetainer(input: {
   roster?: FightingForceGroup[];
   clericFightingForce?: boolean;
 }) {
-  return postSheetAction<{ ok: true; retainer: SheetRetainer; schedule: SheetRecurringExpense | null }>("retainer.create", input);
+  return postSheetAction<{
+    ok: true;
+    retainer: SheetRetainer;
+    schedule: SheetRecurringExpense | null;
+  }>("retainer.create", input);
 }
 
 export async function updateRetainer(input: {
@@ -1009,7 +1120,11 @@ export async function updateRetainer(input: {
   roster?: FightingForceGroup[];
   clericFightingForce?: boolean;
 }) {
-  return postSheetAction<{ ok: true; retainer: SheetRetainer; schedule: SheetRecurringExpense | null }>("retainer.update", input);
+  return postSheetAction<{
+    ok: true;
+    retainer: SheetRetainer;
+    schedule: SheetRecurringExpense | null;
+  }>("retainer.update", input);
 }
 
 export async function deleteRetainer(characterId: string, retainerId: string) {
@@ -1025,7 +1140,10 @@ export async function saveTerritory(input: {
   hexNumber?: string;
   scoutingWebhookUrl?: string;
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory }>("territory.create", input);
+  return postSheetAction<{ ok: true; territory: SheetTerritory }>(
+    "territory.create",
+    input,
+  );
 }
 
 export async function updateTerritory(input: {
@@ -1035,14 +1153,23 @@ export async function updateTerritory(input: {
   hexNumber?: string;
   scoutingWebhookUrl?: string;
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory }>("territory.update", input);
+  return postSheetAction<{ ok: true; territory: SheetTerritory }>(
+    "territory.update",
+    input,
+  );
 }
 
-export async function deleteTerritory(characterId: string, territoryId: string) {
-  return postSheetAction<{ ok: true; deletedTerritoryId: string }>("territory.delete", {
-    characterId,
-    territoryId,
-  });
+export async function deleteTerritory(
+  characterId: string,
+  territoryId: string,
+) {
+  return postSheetAction<{ ok: true; deletedTerritoryId: string }>(
+    "territory.delete",
+    {
+      characterId,
+      territoryId,
+    },
+  );
 }
 
 export async function uploadTerritoryMap(input: {
@@ -1052,7 +1179,10 @@ export async function uploadTerritoryMap(input: {
   mimeType: string;
   base64: string;
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory }>("territory.map.upload", input);
+  return postSheetAction<{ ok: true; territory: SheetTerritory }>(
+    "territory.map.upload",
+    input,
+  );
 }
 
 export async function uploadTerritoryPoiMap(input: {
@@ -1062,7 +1192,10 @@ export async function uploadTerritoryPoiMap(input: {
   mimeType: string;
   base64: string;
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory }>("territory.poi-map.upload", input);
+  return postSheetAction<{ ok: true; territory: SheetTerritory }>(
+    "territory.poi-map.upload",
+    input,
+  );
 }
 
 export type TerritoryWorkbookRow = {
@@ -1087,10 +1220,11 @@ export async function importTerritoryWorkbook(input: {
   base64: string;
   rows: TerritoryWorkbookRow[];
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory; hexes: SheetTerritoryHex[] }>(
-    "territory.workbook.import",
-    input,
-  );
+  return postSheetAction<{
+    ok: true;
+    territory: SheetTerritory;
+    hexes: SheetTerritoryHex[];
+  }>("territory.workbook.import", input);
 }
 
 export async function uploadCharacterPortrait(input: {
@@ -1119,7 +1253,12 @@ export async function notifyScoutingMissionStarted(input: {
   hexNumber: string;
   mapX: number;
   mapY: number;
-  allocations: Array<{ retainerId: string; rosterGroupId?: string; soldierType: string; men: number }>;
+  allocations: Array<{
+    retainerId: string;
+    rosterGroupId?: string;
+    soldierType: string;
+    men: number;
+  }>;
   startedAt: string;
   durationDays: number;
   completesAt: string;
@@ -1136,7 +1275,12 @@ export async function startScoutingMission(input: {
   hexNumber: string;
   mapX: number;
   mapY: number;
-  allocations: Array<{ retainerId: string; rosterGroupId?: string; soldierType: string; men: number }>;
+  allocations: Array<{
+    retainerId: string;
+    rosterGroupId?: string;
+    soldierType: string;
+    men: number;
+  }>;
   officerRetainerId?: string;
   clientMissionId?: string;
   startedAt?: string;
@@ -1161,7 +1305,10 @@ export async function createCustomMission(input: {
   officerRetainerId?: string;
   additionalNotes?: string;
 }) {
-  return postSheetAction<{ ok: true; mission: SheetCustomMission }>("mission.custom.create", input);
+  return postSheetAction<{ ok: true; mission: SheetCustomMission }>(
+    "mission.custom.create",
+    input,
+  );
 }
 
 export async function completeDueScoutingMission(input: {
@@ -1180,7 +1327,10 @@ export async function completeScoutingMissionForTesting(input: {
   characterId: string;
   missionId: string;
 }) {
-  return postSheetAction<{ ok: true; mission: SheetScoutingMission }>("scouting.complete-test", input);
+  return postSheetAction<{ ok: true; mission: SheetScoutingMission }>(
+    "scouting.complete-test",
+    input,
+  );
 }
 
 export async function promoteScoutingSerjeants(input: {
@@ -1188,15 +1338,31 @@ export async function promoteScoutingSerjeants(input: {
   missionId: string;
   walletBalance: { pp: number; gp: number; sp: number; cp: number };
 }) {
-  return postSheetAction<{ ok: true; mission: SheetScoutingMission; transaction: SheetTransaction }>("scouting.promote-serjeants", input);
+  return postSheetAction<{
+    ok: true;
+    mission: SheetScoutingMission;
+    transaction: SheetTransaction;
+  }>("scouting.promote-serjeants", input);
 }
 
-export async function viewScoutingMissionResults(input: { characterId: string; missionId: string }) {
-  return postSheetAction<{ ok: true; mission: SheetScoutingMission }>("scouting.view-results", input);
+export async function viewScoutingMissionResults(input: {
+  characterId: string;
+  missionId: string;
+}) {
+  return postSheetAction<{ ok: true; mission: SheetScoutingMission }>(
+    "scouting.view-results",
+    input,
+  );
 }
 
-export async function dismissScoutingMission(input: { characterId: string; missionId: string }) {
-  return postSheetAction<{ ok: true; mission: SheetScoutingMission }>("scouting.dismiss", input);
+export async function dismissScoutingMission(input: {
+  characterId: string;
+  missionId: string;
+}) {
+  return postSheetAction<{ ok: true; mission: SheetScoutingMission }>(
+    "scouting.dismiss",
+    input,
+  );
 }
 
 export async function upsertTerritoryHex(input: {
@@ -1209,16 +1375,27 @@ export async function upsertTerritoryHex(input: {
   contents?: string;
   dmRevealed?: boolean;
 }) {
-  return postSheetAction<{ ok: true; hex: SheetTerritoryHex }>("territory.hex.upsert", input);
+  return postSheetAction<{ ok: true; hex: SheetTerritoryHex }>(
+    "territory.hex.upsert",
+    input,
+  );
 }
 
 export async function saveTerritoryManagement(input: {
   characterId: string;
   territoryId: string;
   population: number;
-  assets: Array<{ type: string; name: string; quantity: number; notes?: string }>;
+  assets: Array<{
+    type: string;
+    name: string;
+    quantity: number;
+    notes?: string;
+  }>;
 }) {
-  return postSheetAction<{ ok: true; territory: SheetTerritory }>("territory.management.update", input);
+  return postSheetAction<{ ok: true; territory: SheetTerritory }>(
+    "territory.management.update",
+    input,
+  );
 }
 
 export async function saveTerritoryFieldAllocation(input: {
@@ -1229,7 +1406,10 @@ export async function saveTerritoryFieldAllocation(input: {
   cottonFields: number;
   pastureFields: number;
 }) {
-  return postSheetAction<{ ok: true; hex: SheetTerritoryHex }>("territory.fields.update", input);
+  return postSheetAction<{ ok: true; hex: SheetTerritoryHex }>(
+    "territory.fields.update",
+    input,
+  );
 }
 
 export async function startSettlementFieldExpansion(input: {
@@ -1238,7 +1418,11 @@ export async function startSettlementFieldExpansion(input: {
   hexId: string;
   walletBalance: { pp: number; gp: number; sp: number; cp: number };
 }) {
-  return postSheetAction<{ ok: true; hex: SheetTerritoryHex; transaction: SheetTransaction }>("territory.fields.expand", input);
+  return postSheetAction<{
+    ok: true;
+    hex: SheetTerritoryHex;
+    transaction: SheetTransaction;
+  }>("territory.fields.expand", input);
 }
 
 export async function startFarmlandDevelopment(input: {
@@ -1248,11 +1432,23 @@ export async function startFarmlandDevelopment(input: {
   settlementHexId: string;
   walletBalance: { pp: number; gp: number; sp: number; cp: number };
 }) {
-  return postSheetAction<{ ok: true; plainsHex: SheetTerritoryHex; settlementHex: SheetTerritoryHex; transaction: SheetTransaction }>("territory.farmland.start", input);
+  return postSheetAction<{
+    ok: true;
+    plainsHex: SheetTerritoryHex;
+    settlementHex: SheetTerritoryHex;
+    transaction: SheetTransaction;
+  }>("territory.farmland.start", input);
 }
 
-export async function rollTerritoryRecruitment(input: { characterId: string; territoryId: string }) {
-  return postSheetAction<{ ok: true; offer: TerritoryRecruitmentOffer; consumed?: boolean }>("territory.recruitment.roll", input);
+export async function rollTerritoryRecruitment(input: {
+  characterId: string;
+  territoryId: string;
+}) {
+  return postSheetAction<{
+    ok: true;
+    offer: TerritoryRecruitmentOffer;
+    consumed?: boolean;
+  }>("territory.recruitment.roll", input);
 }
 
 export async function completeTerritoryRecruitment(input: {
@@ -1262,10 +1458,21 @@ export async function completeTerritoryRecruitment(input: {
   forceId?: string;
   newForceName?: string;
   chosenSoldierType?: string;
-  equipment: Array<{ name: string; quantityPerSoldier: number; amount: number; coin: string }>;
+  equipment: Array<{
+    name: string;
+    quantityPerSoldier: number;
+    amount: number;
+    coin: string;
+  }>;
   walletBalance: { pp: number; gp: number; sp: number; cp: number };
 }) {
-  return postSheetAction<{ ok: true; offer: TerritoryRecruitmentOffer; retainer: SheetRetainer; schedule: SheetRecurringExpense; transaction: SheetTransaction }>("territory.recruitment.complete", input);
+  return postSheetAction<{
+    ok: true;
+    offer: TerritoryRecruitmentOffer;
+    retainer: SheetRetainer;
+    schedule: SheetRecurringExpense;
+    transaction: SheetTransaction;
+  }>("territory.recruitment.complete", input);
 }
 
 export async function denyTerritoryRecruitment(input: {
@@ -1273,11 +1480,20 @@ export async function denyTerritoryRecruitment(input: {
   territoryId: string;
   offerId: string;
 }) {
-  return postSheetAction<{ ok: true; offer: TerritoryRecruitmentOffer }>("territory.recruitment.deny", input);
+  return postSheetAction<{ ok: true; offer: TerritoryRecruitmentOffer }>(
+    "territory.recruitment.deny",
+    input,
+  );
 }
 
-export async function resetTerritoryRecruitment(input: { characterId: string; territoryId: string }) {
-  return postSheetAction<{ ok: true; resetCount: number }>("territory.recruitment.reset", input);
+export async function resetTerritoryRecruitment(input: {
+  characterId: string;
+  territoryId: string;
+}) {
+  return postSheetAction<{ ok: true; resetCount: number }>(
+    "territory.recruitment.reset",
+    input,
+  );
 }
 
 export async function saveSheetCharacter(input: {
@@ -1289,7 +1505,7 @@ export async function saveSheetCharacter(input: {
 }) {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
 
-  const response = await fetch(SCRIPT_URL, {
+  const response = await requestSheet(SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -1305,9 +1521,11 @@ export async function saveSheetCharacter(input: {
     }),
   });
 
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not create the character.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not create the character.");
   return data.character as SheetCharacter;
 }
 
@@ -1319,7 +1537,7 @@ export async function updateSheetCharacter(input: {
 }) {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
 
-  const response = await fetch(SCRIPT_URL, {
+  const response = await requestSheet(SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -1334,16 +1552,18 @@ export async function updateSheetCharacter(input: {
     }),
   });
 
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not update the character.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not update the character.");
   return data.character as SheetCharacter;
 }
 
 export async function deleteSheetCharacter(characterId: string) {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
 
-  const response = await fetch(SCRIPT_URL, {
+  const response = await requestSheet(SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -1355,9 +1575,11 @@ export async function deleteSheetCharacter(characterId: string) {
     }),
   });
 
-  if (!response.ok) throw new Error(`Google Sheets returned ${response.status}.`);
+  if (!response.ok)
+    throw new Error(`Google Sheets returned ${response.status}.`);
   const data = await response.json();
-  if (!data.ok) throw new Error(data.error || "Could not delete the character.");
+  if (!data.ok)
+    throw new Error(data.error || "Could not delete the character.");
   return data as { ok: true; deletedCharacterId: string };
 }
 
@@ -1403,5 +1625,8 @@ export async function deleteJournalEntry(input: {
   entryId: string;
   characterId: string;
 }) {
-  return postSheetAction<{ ok: true; deletedEntryId: string }>("journal.delete", input);
+  return postSheetAction<{ ok: true; deletedEntryId: string }>(
+    "journal.delete",
+    input,
+  );
 }
