@@ -426,6 +426,8 @@ export function useSession(getContext: () => SessionContext) {
     cacheBaseRef.current = cached;
 
     if (cached) {
+      // Remember the selection immediately even when fresh data needs no network refresh.
+      saveCachedSheetData(cached);
       applySheetData(cached, false);
 
       // applySheetData uses the snapshot's selectedCharacterId. Reassert the

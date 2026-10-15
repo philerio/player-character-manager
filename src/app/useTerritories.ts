@@ -1,3 +1,4 @@
+import { territoryHexKey } from "./territoryRules";
 import { getDraftScope } from "../google-sheets-api";
 import {
   AppError,
@@ -435,6 +436,8 @@ export function useTerritories(
         "A custom mission has an unconfirmed result. Your orders are preserved. Check the campaign copy before refreshing; the mission will not be sent again automatically.",
       );
     syncLock.current.add(characterId);
+    const pendingReveals: Extract<TerritoryLocalOperation, { kind: "hex" }>[] =
+      [];
     let completed = 0;
     const total = draft.operations.length;
     const active = () => selectedCharacterIdRef.current === characterId;
@@ -556,11 +559,18 @@ export function useTerritories(
           });
         }
         assertScope();
-        const latest = acknowledgeTerritoryOperation(
-          characterId,
-          operation,
-          confirmedMission,
-        );
+        // An acknowledgement alone does not prove the reveal survived in Sheets.
+        // Keep reveal operations queued until a fresh status read confirms the flag.
+        const isReveal =
+          operation.kind === "hex" && operation.dmRevealed === true;
+        if (isReveal) pendingReveals.push(operation);
+        const latest = isReveal
+          ? loadTerritoryDraft(characterId)!
+          : acknowledgeTerritoryOperation(
+              characterId,
+              operation,
+              confirmedMission,
+            );
         if (active()) {
           setTerritories(latest.territories);
           setTerritoryHexes(latest.territoryHexes);
@@ -574,8 +584,27 @@ export function useTerritories(
 
       // This read is intentionally the authoritative completion point. It also
       // adjudicates any scouting mission whose real-world timer has expired.
-      const data = await loadTerritoryStatus(characterId);
+      const data = await loadTerritoryStatus(characterId, true);
       assertScope();
+      const missing: string[] = [];
+      for (const operation of pendingReveals) {
+        const confirmed = data.territoryHexes.some(
+          (hex) =>
+            hex.territoryId === operation.territoryId &&
+            territoryHexKey(hex.hexNumber) ===
+              territoryHexKey(operation.hexNumber) &&
+            hex.dmRevealed === true,
+        );
+        if (confirmed) acknowledgeTerritoryOperation(characterId, operation);
+        else missing.push(operation.hexNumber);
+      }
+      if (missing.length) {
+        if (active()) setTerritoryDraftDirty(true);
+        throw new AppError(
+          "validation",
+          `The campaign did not confirm hex ${missing.join(", ")} as revealed. Your local unlocks are kept. Retry the push; if this continues, the campaign service needs to be checked.`,
+        );
+      }
       const latest = loadTerritoryDraft(characterId);
       if (latest?.operations.length) {
         if (active()) setTerritoryDraftDirty(true);

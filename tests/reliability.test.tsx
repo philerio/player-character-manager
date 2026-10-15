@@ -255,40 +255,53 @@ describe("durable synchronization", () => {
     expect(loadJournalDraft(data.selectedCharacterId)).toBeNull();
   });
 
-  it("rejects malformed wallet backups without replacing the existing ledger", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    vi.spyOn(api, "loadLocalWalletBackup").mockResolvedValue({
-      ok: true,
-      characterId: data.selectedCharacterId,
-      backedUpAt: "2026-10-01",
-      transactions: [
-        {
-          id: 1,
-          transactionId: "bad",
-          label: "Bad coins",
-          kind: "income",
-          coins: { pp: 0, gp: "not a number", sp: 0, cp: 0 },
-        },
-      ],
-      recurringExpenses: [],
-    });
-    const selectedCharacterIdRef = ref();
-    const { result } = renderHook(() =>
-      useWallet(() => ({
-        selectedCharacter: data.characters[0],
-        selectedCharacterIdRef,
-        setModal: vi.fn(),
-        setSection: vi.fn(),
-      })),
-    );
-    await act(async () => {
-      await expect(result.current.restoreCurrentWalletBackup()).rejects.toThrow(
-        "invalid data",
+  it.each(["malformed", "wrong-character"])(
+    "rejects %s wallet backups without replacing the existing ledger",
+    async (failure) => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      vi.spyOn(api, "loadLocalWalletBackup").mockResolvedValue({
+        ok: true,
+        characterId:
+          failure === "wrong-character"
+            ? "other-character"
+            : data.selectedCharacterId,
+        backedUpAt: "2026-10-01",
+        transactions: [
+          {
+            id: 1,
+            transactionId: "bad",
+            label: "Bad coins",
+            kind: "income",
+            coins: {
+              pp: 0,
+              gp: failure === "malformed" ? "not a number" : 999,
+              sp: 0,
+              cp: 0,
+            },
+          },
+        ],
+        recurringExpenses: [],
+      });
+      const selectedCharacterIdRef = ref();
+      const { result } = renderHook(() =>
+        useWallet(() => ({
+          selectedCharacter: data.characters[0],
+          selectedCharacterIdRef,
+          setModal: vi.fn(),
+          setSection: vi.fn(),
+        })),
       );
-    });
-    expect(result.current.transactions).toEqual([]);
-    expect(result.current.walletBackupMessage).toBe("");
-  });
+      await act(async () => {
+        await expect(
+          result.current.restoreCurrentWalletBackup(),
+        ).rejects.toThrow(
+          failure === "malformed" ? "invalid data" : "different character",
+        );
+      });
+      expect(result.current.transactions).toEqual([]);
+      expect(result.current.walletBackupMessage).toBe("");
+    },
+  );
 
   it("does not report a successful restore if the device cannot durably save it", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);

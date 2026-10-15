@@ -1,5 +1,10 @@
+import {
+  diagnosticsScope,
+  reportDataIssue,
+  resolveDataIssues,
+} from "./dataDiagnostics";
 import { AppError, serverError } from "./errors";
-import { validateResponse } from "./validation";
+import { normalizeSheetResponse, validateResponse } from "./validation";
 const reads = new Map<
   string,
   {
@@ -31,6 +36,9 @@ export function requestCampaign(
     : parsed.searchParams.get("action") || "bootstrap";
   const characterId = String(
     body.characterId || parsed.searchParams.get("characterId") || "",
+  );
+  const scope = diagnosticsScope(
+    String(body.sessionToken || parsed.searchParams.get("sessionToken") || ""),
   );
   const keyUrl = new URL(url);
   keyUrl.searchParams.delete("_");
@@ -77,9 +85,16 @@ export function requestCampaign(
           throw new AppError(
             "validation",
             "The campaign returned an unreadable response. Your working copy has been kept.",
+            false,
+            {
+              path: "response",
+              expected: "a JSON response",
+              received: "unreadable response",
+            },
           );
         }
-        validateResponse(action, data, characterId || undefined);
+        const normalized = normalizeSheetResponse(data);
+        validateResponse(action, data, characterId || undefined, body);
         if (!data.ok)
           throw serverError(
             String(
@@ -88,6 +103,18 @@ export function requestCampaign(
           );
         if (controller.signal.aborted)
           throw new AppError("cancelled", "This request was superseded.");
+        resolveDataIssues(scope, action, characterId);
+        if (normalized) {
+          const headers = new Headers(response.headers);
+          headers.delete("Content-Length");
+          headers.delete("Content-Encoding");
+          headers.set("Content-Type", "application/json");
+          return new Response(JSON.stringify(data), {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        }
         return response;
       } catch (reason) {
         const error =
@@ -111,6 +138,12 @@ export function requestCampaign(
                       "Could not reach the campaign. Showing the saved working copy; retry when connected.",
                       true,
                     );
+        if (
+          !controller.signal.aborted &&
+          error.code === "validation" &&
+          error.dataIssue
+        )
+          reportDataIssue(scope, action, characterId, error.dataIssue);
         if (
           write ||
           attempt >= 1 ||

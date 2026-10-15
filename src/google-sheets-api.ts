@@ -1,4 +1,5 @@
-import { validateResponse } from "./app/validation";
+import { clearDataIssues, diagnosticsScope } from "./app/dataDiagnostics";
+import { normalizeSheetResponse, validateResponse } from "./app/validation";
 import { requestCampaign, cancelAllReads } from "./app/transport";
 import { isDemoMode } from "./app/runtime";
 import { demoRequest, getDemoBootstrap } from "./app/demoApi";
@@ -517,6 +518,7 @@ export function loadCachedSheetData(
       cached.playerId !== cached.data.currentPlayer.playerId
     )
       return null;
+    normalizeSheetResponse(cached.data);
     validateResponse(
       "bootstrap",
       cached.data,
@@ -579,6 +581,7 @@ export function getSessionToken() {
 }
 
 export function clearSession() {
+  clearDataIssues(diagnosticsScope(getSessionToken()));
   try {
     appStorage.setItem("pcm-draft-account", getDraftScope());
   } catch {
@@ -599,12 +602,15 @@ export function hasSheetsConnection() {
 
 export async function loadTerritoryStatus(
   characterId: string,
+  fresh = false,
 ): Promise<SheetTerritoryStatus> {
   if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "territory-status");
+  // A read after a mutation must not join an older in-flight status request.
+  if (fresh) url.searchParams.set("afterMutation", crypto.randomUUID());
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
   url.searchParams.set("sessionToken", getSessionToken());
   url.searchParams.set("characterId", characterId);
@@ -765,10 +771,10 @@ async function postSheetAction<T>(
     redirect: "follow",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify({
+      ...payload,
       action,
       accessKey: ACCESS_KEY,
       sessionToken: getSessionToken(),
-      ...payload,
     }),
   });
   if (!response.ok)
@@ -1133,6 +1139,7 @@ export async function saveRetainer(input: {
 export async function updateRetainer(input: {
   characterId: string;
   retainerId: string;
+  expectedUpdatedAt?: string;
   type: "individual" | "force";
   name: string;
   role: string;
@@ -1152,10 +1159,15 @@ export async function updateRetainer(input: {
   }>("retainer.update", input);
 }
 
-export async function deleteRetainer(characterId: string, retainerId: string) {
+export async function deleteRetainer(
+  characterId: string,
+  retainerId: string,
+  expectedUpdatedAt?: string,
+) {
   return postSheetAction<{ ok: true; retainerId: string }>("retainer.delete", {
     characterId,
     retainerId,
+    expectedUpdatedAt,
   });
 }
 
@@ -1630,6 +1642,7 @@ export async function saveJournalEntry(input: {
 }
 
 export async function updateJournalEntry(input: {
+  expectedUpdatedAt?: string;
   entryId: string;
   characterId: string;
   title: string;
@@ -1639,6 +1652,7 @@ export async function updateJournalEntry(input: {
   const result = await postSheetAction<{ ok: true; entry: SheetJournalEntry }>(
     "journal.update",
     {
+      expectedUpdatedAt: input.expectedUpdatedAt,
       entryId: input.entryId,
       characterId: input.characterId,
       title: input.title,
@@ -1650,6 +1664,7 @@ export async function updateJournalEntry(input: {
 }
 
 export async function deleteJournalEntry(input: {
+  expectedUpdatedAt?: string;
   entryId: string;
   characterId: string;
 }) {

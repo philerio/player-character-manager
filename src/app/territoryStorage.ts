@@ -1,3 +1,4 @@
+import { territoryHexKey } from "./territoryRules";
 import { appStorage } from "./storage";
 
 import {
@@ -81,6 +82,29 @@ export type TerritoryLocalDraft = {
   uncertainOperations?: string[];
   updatedAt: string;
 };
+
+/** DM reveals are additive visibility changes and must not wait for local field/scouting edits. */
+export function mergePublishedTerritoryReveals(
+  draft: TerritoryLocalDraft,
+  remote: SheetTerritoryHex[],
+): TerritoryLocalDraft {
+  const key = (hex: SheetTerritoryHex) =>
+    `${hex.territoryId}:${territoryHexKey(hex.hexNumber)}`;
+  const hexes = new Map(draft.territoryHexes.map((hex) => [key(hex), hex]));
+  for (const hex of remote) {
+    if (hex.characterId !== draft.characterId || hex.dmRevealed !== true)
+      continue;
+    const local = hexes.get(key(hex));
+    // Local allocations/content and operation IDs remain intact.
+    hexes.set(key(hex), {
+      ...hex,
+      ...local,
+      dmRevealed: true,
+      isDiscovered: true,
+    });
+  }
+  return { ...draft, territoryHexes: [...hexes.values()] };
+}
 
 const TERRITORY_DRAFT_PREFIX = "pcm-territory-draft:v1:";
 

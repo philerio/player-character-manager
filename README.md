@@ -32,9 +32,10 @@ npm run dev:demo
 Open the address Vite prints. The banner links to player (`?demo=player`) and
 DM (`?demo=dm`) views and includes a reset button. An unconfigured app also starts
 in demo mode. These query parameters select a demo even when a live Sheets URL
-is configured. Player and DM demos each have separate browser storage, and all
-demo service requests are handled locally without contacting Sheets or Discord.
-Reset clears only the current demo role's data.
+is configured. Player and DM demos share one simulated campaign in this browser. Each role
+keeps separate sessions, caches, and unsaved drafts. All demo service requests
+are handled locally without contacting Sheets or Discord. Reset clears the
+shared campaign and both roles' demo data; live data is untouched.
 
 On the Territories screen, use **View Map** to open the sample map. In the DM
 view, **Unlock Hexes** opens unlock mode: click any locked hex, or choose its
@@ -43,7 +44,10 @@ matching detail map for the DM without unlocking any player hexes. The center he
 normal mode, unlocked hexes open their details and locked hexes offer scouting.
 The map controls also support Enter/Space. DM unlocks persist locally; use
 **Push Territories to Sheet** in the map toolbar to share them. Players receive
-the changes on their next sync. If you have an older demo saved, use **Reset demo**
+the changes on their next background refresh, including when they have pending
+territory edits. Published reveals merge into their map without discarding those edits.
+A DM push verifies the saved reveal flags with a fresh campaign read before
+reporting success. If you have an older demo saved, use **Reset demo**
 once to load the new sample maps.
 
 The demo includes two characters, wallets, linked recurring wages, individual
@@ -66,9 +70,10 @@ The workbook is reference material, not an application asset or runtime import.
 Copy `.env.example` to `.env.local` and set `VITE_APPS_SCRIPT_URL` to your deployed
 Apps Script URL. Set `VITE_PCM_ACCESS_KEY` if your deployment uses an access key.
 Leave `VITE_DEMO_MODE=false` and remove demo query parameters for live operation.
-Restart Vite after changing environment variables. The backend source is not in
-this repository; this client continues using its existing action names and data
-contracts. Vite variables are included in the client bundle, so authentication
+Restart Vite after changing environment variables. A local backend reference is
+now available at `playerData/Code.gs` (the directory is ignored by Git). Apps Script
+deployment is separate from the frontend build; this client continues using its
+existing action names and data contracts. Vite variables are included in the client bundle, so authentication
 and authorization remain the backend's responsibility.
 
 ## Code organization
@@ -106,6 +111,11 @@ campaign data in the background. Unknown datasets show a loading indicator;
 dropdowns and actions requiring them stay unavailable until the data is ready.
 A successful empty result is displayed separately from a failed or unfinished
 request. Cached content stays usable during refreshes and connection failures.
+Independent journal, retainer, and territory reads run in parallel and each
+screen becomes ready as soon as its own response arrives. Related writes still
+run in sequence. Character switches reuse the account roster; it is rechecked
+after two minutes or during an explicit full refresh. Recently confirmed
+character datasets are reused when their published revisions are unchanged.
 
 Ordinary **Save** actions persist hireling, territory, and journal changes on the
 device first. Players and DM-owned characters send pending changes automatically
@@ -126,8 +136,11 @@ check is useful, but routine edits do not require a Sync click.
 | Due scouting                                        | Submits expired local timers, including when reopening the app.                                                                                                                                                              |
 | Uploads, account administration, and backup restore | Explicit service actions; failed forms retain their inputs.                                                                                                                                                                  |
 
-The persistent status bar distinguishes saved local changes, pending work,
-synchronization progress, confirmed campaign data, offline use, and errors.
+A compact loading indicator sits beside the selected character’s name. Its
+dropdown contains detailed progress, saved local changes, pending work,
+confirmed campaign data, offline status, and retry controls. Errors remain
+visible on the page even with the dropdown closed. Cached screens stay usable
+without an additional refresh progress bar above their content.
 Known operation counts use a progress bar; waiting on an unknown-duration
 request uses an indeterminate indicator. Each failed dataset has its own retry
 control. Character-specific requests are fenced against the selection's
@@ -139,18 +152,41 @@ Successful mutations are checkpointed immediately; a failed later operation
 cannot resend already acknowledged creations. Responses and restored wallet
 backups are validated before replacing the working copy.
 
-The external Apps Script backend is not part of this repository. Stable client
-mutation IDs are sent for queued creations. If a response is lost and the
+The live Apps Script deployment is managed separately. `playerData/Code.gs`
+contains a local reference copy. That copy currently does not enforce the
+frontend’s expected versions for journal/retainer updates or preserve mutation
+IDs for their creations. Stable client mutation IDs are sent for queued creations. If a response is lost and the
 backend cannot return that ID with its record, the app stops that creation and
 asks for review instead of risking a duplicate. End-to-end deduplication and
 atomic conflict checks require backend support; a frontend check cannot close
-the race between reading a revision and writing to the server.
+the race between reading a revision and writing to the server. Journal and retainer
+updates and deletes now send `expectedUpdatedAt` from the fetched record (legacy
+retainers use `createdAt` when `updatedAt` is absent). The demo rejects stale versions.
+The live Apps Script must compare this value with the current record under the
+same lock used for the write and return `{ ok: false, error: "Conflict: record
+changed in the campaign." }` without modifying data on mismatch. It must update
+`updatedAt` after every successful edit. Sending this field alone does not provide
+atomic conflict protection until the backend implements that contract.
 
 If browser storage is full or unavailable, the app reports the problem and keeps
 an in-memory rescue copy of attempted writes. Keep the tab open and use
 **Download working copy** before leaving. **Retry saving locally** attempts to
 persist that copy. Export files omit session-token keys. A successful backend
 write is not presented as a durable local save when storage failed.
+
+DMs can open **Data checks** inside the character dropdown to inspect validation
+failures for the selected character. Each report identifies the request, dataset,
+record ID when available, response position, field path, expected format, and
+received type. **Download data issue report** exports this metadata without raw
+response values, credentials, emails, request bodies, or service URLs. Reports
+are scoped to the session, kept in memory, and cleared on sign-out. A successful
+retry clears that request’s issue; a later failure replaces its previous field
+report. Validation stops at the first invalid field in each response.
+
+These checks cover data returned to this browser, rather than a full spreadsheet
+audit. Use record IDs to locate spreadsheet rows. Exact sheet row numbers would
+require source metadata from Apps Script. Failures seen only in another player’s
+browser are not automatically sent to the DM.
 
 Regression tests cover offline reconnection, automatic synchronization, partial
 success, edits during sync, failed refreshes, stale responses, dropdown readiness,

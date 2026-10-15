@@ -19,79 +19,83 @@ function announce() {
 
 const prefix = isDemoMode ? `pcm-demo:${demoRole}:` : "";
 
-/** Exposes only the current mode's keys, including during cache cleanup. */
-export const appStorage: Storage = {
-  get length() {
-    return keys().length;
-  },
-  key(index) {
-    return keys()[index] ?? null;
-  },
-  getItem(key) {
-    try {
-      return rescue.get(key) ?? window.localStorage.getItem(prefix + key);
-    } catch {
-      noteFailure();
-      return rescue.get(key) ?? null;
-    }
-  },
-  setItem(key, value) {
-    try {
-      window.localStorage.setItem(prefix + key, value);
-      rescue.delete(key);
-    } catch {
-      rescue.set(key, value);
-      noteFailure();
-      throw new AppError(
-        "storage",
-        "Could not save on this device. Keep this tab open and download a backup before leaving.",
-      );
-    }
-  },
-  removeItem(key) {
-    window.localStorage.removeItem(prefix + key);
-    rescue.delete(key);
-  },
-  clear() {
-    for (const key of keys()) this.removeItem(key);
-    rescue.clear();
-    failure = false;
-    announce();
-  },
-};
-function keys() {
-  const result: string[] = [];
+/** Each view keeps its own drafts/cache; the demo campaign acts as their shared server. */
+function scopedStorage(scope: string): Storage {
+  return {
+    get length() {
+      return keys(scope).length;
+    },
+    key(index) {
+      return keys(scope)[index] ?? null;
+    },
+    getItem(key) {
+      try {
+        return (
+          rescue.get(scope + key) ?? window.localStorage.getItem(scope + key)
+        );
+      } catch {
+        noteFailure();
+        return rescue.get(scope + key) ?? null;
+      }
+    },
+    setItem(key, value) {
+      try {
+        window.localStorage.setItem(scope + key, value);
+        rescue.delete(scope + key);
+      } catch {
+        rescue.set(scope + key, value);
+        noteFailure();
+        throw new AppError(
+          "storage",
+          "Could not save on this device. Keep this tab open and download a backup before leaving.",
+        );
+      }
+    },
+    removeItem(key) {
+      window.localStorage.removeItem(scope + key);
+      rescue.delete(scope + key);
+    },
+    clear() {
+      for (const key of keys(scope)) this.removeItem(key);
+      failure = rescue.size > 0;
+      announce();
+    },
+  };
+}
+export const appStorage = scopedStorage(prefix);
+export const demoCampaignStorage = scopedStorage("pcm-demo:campaign:");
+function keys(scope = prefix) {
+  const belongs = (key: string) =>
+    scope ? key.startsWith(scope) : !key.startsWith("pcm-demo:");
+  const result = new Set<string>();
   try {
     for (let i = 0; i < window.localStorage.length; i++) {
       const key = window.localStorage.key(i);
-      if (
-        key !== null &&
-        (prefix ? key.startsWith(prefix) : !key.startsWith("pcm-demo:"))
-      )
-        result.push(key.slice(prefix.length));
+      if (key !== null && belongs(key)) result.add(key.slice(scope.length));
     }
   } catch {
     noteFailure();
-    return [...rescue.keys()];
   }
-  return result;
+  for (const key of rescue.keys())
+    if (belongs(key)) result.add(key.slice(scope.length));
+  return [...result];
 }
 export function resetDemo() {
   if (!isDemoMode) return;
-  appStorage.clear();
+  // Both role caches/drafts must reset alongside their shared campaign.
+  scopedStorage("pcm-demo:").clear();
   window.location.reload();
 }
-
 export function retryStorage() {
   for (const [key, value] of rescue) {
-    window.localStorage.setItem(prefix + key, value);
+    window.localStorage.setItem(key, value);
     rescue.delete(key);
   }
   failure = false;
   announce();
 }
 export function downloadWorkingCopy() {
-  const records = [...new Set([...keys(), ...rescue.keys()])]
+  const records = keys()
     .filter((key) =>
       /^pcm-(local-wallet|retainer-draft|territory-draft|journal-draft|bootstrap-cache)/.test(
         key,
@@ -105,7 +109,11 @@ export function downloadWorkingCopy() {
       } catch {
         data = value;
       }
-      return { kind: key.split(":")[0], memoryOnly: rescue.has(key), data };
+      return {
+        kind: key.split(":")[0],
+        memoryOnly: rescue.has(prefix + key),
+        data,
+      };
     });
   const url = URL.createObjectURL(
     new Blob(

@@ -11,6 +11,7 @@ import {
 import {
   clearSession,
   loadCachedSheetData,
+  loadSharedRosterCache,
   saveCachedSheetData,
   loadAccountRoster,
   loadJournalData,
@@ -28,14 +29,18 @@ import {
   type SheetJournalEntry,
 } from "../google-sheets-api";
 import { loadRetainerDraft } from "./retainerStorage";
-import { loadTerritoryDraft } from "./territoryStorage";
+import {
+  loadTerritoryDraft,
+  saveTerritoryDraft,
+  mergePublishedTerritoryReveals,
+} from "./territoryStorage";
 import {
   loadAcceptedTabSyncRevisions,
   saveAcceptedTabSyncRevisions,
 } from "./syncStorage";
 import { hasStorageFailure } from "./storage";
 import { cancelCharacterReads } from "./transport";
-import { AppError, errorMessage } from "./errors";
+import { AppError, errorMessage, type SyncProgress } from "./errors";
 
 export type ResourceName = "journal" | "retainers" | "territories";
 export type ResourceState = {
@@ -107,10 +112,12 @@ export function useBackgroundSync(
   );
   const [refreshing, setRefreshing] = useState(false);
   const [phase, setPhase] = useState("");
+  const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [error, setError] = useState("");
   const lock = useRef<Promise<void> | null>(null);
   const generation = useRef(0);
   const lastCheck = useRef(0);
+  const lastRosterCheck = useRef(Date.now());
   const ready = useRef(false);
   const update = (
     id: string,
@@ -175,222 +182,308 @@ export function useBackgroundSync(
           setPhase("Checking campaign updates…");
         }
         try {
+          const cachedAccount = loadSharedRosterCache();
+          const fetchRoster =
+            (force && !only) ||
+            (!only && Date.now() - lastRosterCheck.current > 120_000) ||
+            (!ctx.currentPlayer && !cachedAccount);
+          const targets = only ? [only] : names;
+          let completed = 0;
+          const total = targets.length + 1 + (fetchRoster ? 1 : 0);
+          const advance = (steps = 1) => {
+            completed += steps;
+            if (current())
+              setProgress({
+                completed,
+                total,
+                label: `${completed} of ${total} data checks complete`,
+              });
+          };
+          if (current())
+            setProgress({
+              completed: 0,
+              total,
+              label: "Checking campaign data",
+            });
+          if (fetchRoster) ctx.setRosterRefreshing(true);
+          // Independent metadata reads share one round trip instead of blocking each other.
+          const [accountResult, revisionResult] = await Promise.allSettled([
+            fetchRoster ? loadAccountRoster() : Promise.resolve(cachedAccount),
+            loadTabSyncRevisions(id),
+          ]);
+          if (!current()) return;
+          if (fetchRoster) ctx.setRosterRefreshing(false);
+          if (accountResult.status === "rejected") {
+            ctx.setRosterRefreshError(errorMessage(accountResult.reason));
+            throw accountResult.reason;
+          }
+          if (revisionResult.status === "rejected") throw revisionResult.reason;
+          const account = accountResult.value;
           let player = ctx.currentPlayer;
-          if (force) {
-            ctx.setRosterRefreshing(true);
-            try {
-              const account = await loadAccountRoster();
-              if (!current()) return;
-              if (!account.characters.some((row) => row.characterId === id))
-                throw new AppError(
-                  "conflict",
-                  "This character is no longer in the campaign roster. The local working copy is kept; choose another character or contact the DM.",
-                );
-              if (!ctx.cacheBaseRef.current) {
-                const base: SheetBootstrap = {
-                  ok: true,
-                  loadedTabs: [],
-                  campaignName: "Campaign",
-                  coinWeightPerPound: 10,
-                  discordWebhookConfigured: false,
-                  currentPlayer: account.currentPlayer,
-                  players: account.players,
-                  permissions: ctx.accountPermissions(account.currentPlayer),
-                  characters: account.characters,
-                  selectedCharacterId: id,
-                  balance: { pp: 0, gp: 0, sp: 0, cp: 0 },
-                  transactions: [],
-                  recurringExpenses: [],
-                  retainers: [],
-                  territories: [],
-                  territoryHexes: [],
-                  scoutingMissions: [],
-                  customMissions: [],
-                  journal: [],
-                };
-                ctx.cacheBaseRef.current = base;
-                saveCachedSheetData(base);
-              }
-              player = account.currentPlayer;
+          if (account) {
+            if (!account.characters.some((row) => row.characterId === id))
+              throw new AppError(
+                "conflict",
+                "This character is no longer in the campaign roster. The local working copy is kept; choose another character or contact the DM.",
+              );
+            if (!ctx.cacheBaseRef.current) {
+              const base: SheetBootstrap = {
+                ok: true,
+                loadedTabs: [],
+                campaignName: "Campaign",
+                coinWeightPerPound: 10,
+                discordWebhookConfigured: false,
+                currentPlayer: account.currentPlayer,
+                players: account.players,
+                permissions: ctx.accountPermissions(account.currentPlayer),
+                characters: account.characters,
+                selectedCharacterId: id,
+                balance: { pp: 0, gp: 0, sp: 0, cp: 0 },
+                transactions: [],
+                recurringExpenses: [],
+                retainers: [],
+                territories: [],
+                territoryHexes: [],
+                scoutingMissions: [],
+                customMissions: [],
+                journal: [],
+              };
+              ctx.cacheBaseRef.current = base;
+              saveCachedSheetData(base);
+            }
+            player = account.currentPlayer;
+            if (fetchRoster) {
               ctx.setCurrentPlayer(player);
               ctx.setPlayers(account.players);
               ctx.setCharacters(account.characters);
               ctx.setPermissions(ctx.accountPermissions(player));
               ctx.setRosterReady(true);
               ctx.setRosterRefreshError("");
-            } catch (reason) {
-              ctx.setRosterRefreshError(errorMessage(reason));
-              throw reason;
-            } finally {
-              ctx.setRosterRefreshing(false);
+              lastRosterCheck.current = Date.now();
             }
           }
-          const revisions = await loadTabSyncRevisions(id);
-          if (!current()) return;
+          const revisions = revisionResult.value;
+          advance(fetchRoster ? 2 : 1);
           const accepted = loadAcceptedTabSyncRevisions(id);
           const mayWrite =
             player?.role !== "dm" ||
             ctx.selectedCharacter?.playerId === player?.playerId;
           const failures: string[] = [];
-          for (const name of names) {
-            if (only && name !== only) continue;
-            if (!current()) return;
-            const draft =
-              name === "retainers"
-                ? loadRetainerDraft(id)
-                : name === "territories"
-                  ? loadTerritoryDraft(id)
-                  : loadJournalDraft(id);
-            const dirty =
-              name === "retainers"
-                ? Boolean(draft)
-                : name === "territories"
-                  ? Boolean(loadTerritoryDraft(id)?.operations.length)
-                  : Boolean(loadJournalDraft(id)?.operations.length);
-            if (dirty && revisions[name] > accepted[name]) {
-              const message =
-                "The DM published a newer campaign copy. Your local edits are preserved. Review it before choosing to refresh and replace your edits.";
-              update(id, name, { status: "error", error: message });
-              failures.push(message);
-              continue;
-            }
-            if (
-              dirty &&
-              flush &&
-              mayWrite &&
-              !hasStorageFailure() &&
-              (force || !stateRef.current[id]?.[name]?.error)
-            ) {
-              setPhase(`Sending pending ${name} changes…`);
-              try {
-                await (name === "retainers"
-                  ? ctx.syncRetainersToCampaign()
+          const syncResource = async (name: ResourceName) => {
+            try {
+              if (!current()) return;
+              const draft =
+                name === "retainers"
+                  ? loadRetainerDraft(id)
                   : name === "territories"
-                    ? ctx.syncTerritoryData()
-                    : ctx.syncJournalToCampaign());
-              } catch (reason) {
-                if (reason instanceof AppError && reason.code === "session")
-                  throw reason;
-                const message = errorMessage(reason);
+                    ? loadTerritoryDraft(id)
+                    : loadJournalDraft(id);
+              const dirty =
+                name === "retainers"
+                  ? Boolean(draft)
+                  : name === "territories"
+                    ? Boolean(loadTerritoryDraft(id)?.operations.length)
+                    : Boolean(loadJournalDraft(id)?.operations.length);
+              if (dirty && revisions[name] > accepted[name]) {
+                // Visibility can advance without discarding pending orders or field edits.
+                if (name === "territories") {
+                  try {
+                    const remote = await loadTerritoryStatus(id, true);
+                    if (!current()) return;
+                    const latest = loadTerritoryDraft(id);
+                    if (latest?.operations.length) {
+                      const merged = mergePublishedTerritoryReveals(
+                        latest,
+                        remote.territoryHexes,
+                      );
+                      if (JSON.stringify(merged) !== JSON.stringify(latest))
+                        saveTerritoryDraft(merged);
+                      contextRef
+                        .current()
+                        .setTerritoryHexes(merged.territoryHexes);
+                    }
+                  } catch (reason) {
+                    if (reason instanceof AppError && reason.code === "session")
+                      throw reason;
+                    if (!current()) return;
+                    const message = errorMessage(reason);
+                    update(id, name, { status: "error", error: message });
+                    failures.push(message);
+                    return;
+                  }
+                }
+                const message =
+                  "The DM published a newer campaign copy. Your local edits are preserved. Review it before choosing to refresh and replace your edits.";
                 update(id, name, { status: "error", error: message });
                 failures.push(message);
-                continue;
+                return;
               }
-              if (!current()) return;
-            }
-            const pending =
-              name === "retainers"
-                ? Boolean(loadRetainerDraft(id))
-                : name === "territories"
-                  ? Boolean(loadTerritoryDraft(id)?.operations.length)
-                  : Boolean(loadJournalDraft(id)?.operations.length);
-            // Never refresh over a working draft, including edits made while a write was in flight.
-            if (pending) continue;
-            const state = stateRef.current[id]?.[name];
-            const stale =
-              !state?.updatedAt ||
-              Date.now() - new Date(state.updatedAt).getTime() > 120_000;
-            if (
-              !force &&
-              !stale &&
-              state?.hasData &&
-              revisions[name] <= accepted[name]
-            )
-              continue;
-            const draftBefore = JSON.stringify(
-              name === "retainers"
-                ? loadRetainerDraft(id)
-                : name === "territories"
-                  ? loadTerritoryDraft(id)
-                  : loadJournalDraft(id),
-            );
-            update(id, name, { status: "loading", error: "" });
-            setPhase(`Refreshing ${name}…`);
-            try {
-              const result =
-                name === "journal"
-                  ? await loadJournalData(id)
-                  : name === "retainers"
-                    ? await loadRetainerData(id)
-                    : await loadTerritoryStatus(id);
-              if (!current()) return;
-              const draftAfter = JSON.stringify(
+              if (
+                dirty &&
+                flush &&
+                mayWrite &&
+                !hasStorageFailure() &&
+                (force || !stateRef.current[id]?.[name]?.error)
+              ) {
+                setPhase(`Sending pending ${name} changes…`);
+                try {
+                  await (name === "retainers"
+                    ? ctx.syncRetainersToCampaign()
+                    : name === "territories"
+                      ? ctx.syncTerritoryData()
+                      : ctx.syncJournalToCampaign());
+                } catch (reason) {
+                  if (reason instanceof AppError && reason.code === "session")
+                    throw reason;
+                  const message = errorMessage(reason);
+                  update(id, name, { status: "error", error: message });
+                  failures.push(message);
+                  return;
+                }
+                if (!current()) return;
+              }
+              const pending =
+                name === "retainers"
+                  ? Boolean(loadRetainerDraft(id))
+                  : name === "territories"
+                    ? Boolean(loadTerritoryDraft(id)?.operations.length)
+                    : Boolean(loadJournalDraft(id)?.operations.length);
+              // Never refresh over a working draft, including edits made while a write was in flight.
+              if (pending) return;
+              const state = stateRef.current[id]?.[name];
+              const stale =
+                !state?.updatedAt ||
+                Date.now() - new Date(state.updatedAt).getTime() > 120_000;
+              if (
+                !force &&
+                !stale &&
+                state?.hasData &&
+                revisions[name] <= accepted[name]
+              )
+                return;
+              const draftBefore = JSON.stringify(
                 name === "retainers"
                   ? loadRetainerDraft(id)
                   : name === "territories"
                     ? loadTerritoryDraft(id)
                     : loadJournalDraft(id),
               );
-              if (draftBefore !== draftAfter) {
-                update(id, name, { status: "cached", hasData: true });
-                continue;
+              update(id, name, { status: "loading", error: "" });
+              setPhase("Refreshing campaign data…");
+              try {
+                const result =
+                  name === "journal"
+                    ? await loadJournalData(id)
+                    : name === "retainers"
+                      ? await loadRetainerData(id)
+                      : await loadTerritoryStatus(id);
+                if (!current()) return;
+                const draftAfter = JSON.stringify(
+                  name === "retainers"
+                    ? loadRetainerDraft(id)
+                    : name === "territories"
+                      ? loadTerritoryDraft(id)
+                      : loadJournalDraft(id),
+                );
+                if (draftBefore !== draftAfter) {
+                  update(id, name, { status: "cached", hasData: true });
+                  return;
+                }
+                const live = contextRef.current();
+                let patch: Partial<SheetBootstrap>;
+                if (name === "journal") {
+                  const journal = (
+                    result as Awaited<ReturnType<typeof loadJournalData>>
+                  ).journal;
+                  live.setJournalEntries(journal);
+                  patch = { journal };
+                } else if (name === "retainers") {
+                  const retainers = (
+                    result as Awaited<ReturnType<typeof loadRetainerData>>
+                  ).retainers;
+                  live.setRetainers(retainers);
+                  patch = { retainers };
+                } else {
+                  const territory = result as Awaited<
+                    ReturnType<typeof loadTerritoryStatus>
+                  >;
+                  live.setTerritories(territory.territories);
+                  live.setScoutingMissions(territory.scoutingMissions);
+                  live.setCustomMissions(territory.customMissions || []);
+                  live.setTerritoryHexes(territory.territoryHexes);
+                  patch = {
+                    territories: territory.territories,
+                    scoutingMissions: territory.scoutingMissions,
+                    customMissions: territory.customMissions || [],
+                    territoryHexes: territory.territoryHexes,
+                  };
+                }
+                const base =
+                  live.cacheBaseRef.current || loadCachedSheetData(id);
+                if (base?.selectedCharacterId === id) {
+                  const next = {
+                    ...base,
+                    ...patch,
+                    loadedTabs: [
+                      ...new Set([
+                        ...(base.loadedTabs ??
+                          ([
+                            "wallet",
+                            "journal",
+                            "retainers",
+                            "territories",
+                          ] as const)),
+                        name,
+                      ]),
+                    ],
+                  };
+                  live.cacheBaseRef.current = next;
+                  saveCachedSheetData(next);
+                }
+                accepted[name] = revisions[name];
+                saveAcceptedTabSyncRevisions(id, accepted);
+                update(id, name, {
+                  status: "ready",
+                  hasData: true,
+                  updatedAt: new Date().toISOString(),
+                  error: "",
+                });
+              } catch (reason) {
+                if (!current()) return;
+                if (reason instanceof AppError && reason.code === "session")
+                  throw reason;
+                const message = errorMessage(reason);
+                update(id, name, { status: "error", error: message });
+                failures.push(message);
               }
-              const live = contextRef.current();
-              let patch: Partial<SheetBootstrap>;
-              if (name === "journal") {
-                const journal = (
-                  result as Awaited<ReturnType<typeof loadJournalData>>
-                ).journal;
-                live.setJournalEntries(journal);
-                patch = { journal };
-              } else if (name === "retainers") {
-                const retainers = (
-                  result as Awaited<ReturnType<typeof loadRetainerData>>
-                ).retainers;
-                live.setRetainers(retainers);
-                patch = { retainers };
-              } else {
-                const territory = result as Awaited<
-                  ReturnType<typeof loadTerritoryStatus>
-                >;
-                live.setTerritories(territory.territories);
-                live.setScoutingMissions(territory.scoutingMissions);
-                live.setCustomMissions(territory.customMissions || []);
-                live.setTerritoryHexes(territory.territoryHexes);
-                patch = {
-                  territories: territory.territories,
-                  scoutingMissions: territory.scoutingMissions,
-                  customMissions: territory.customMissions || [],
-                  territoryHexes: territory.territoryHexes,
-                };
-              }
-              const base = live.cacheBaseRef.current || loadCachedSheetData(id);
-              if (base?.selectedCharacterId === id) {
-                const next = {
-                  ...base,
-                  ...patch,
-                  loadedTabs: [
-                    ...new Set([
-                      ...(base.loadedTabs ??
-                        ([
-                          "wallet",
-                          "journal",
-                          "retainers",
-                          "territories",
-                        ] as const)),
-                      name,
-                    ]),
-                  ],
-                };
-                live.cacheBaseRef.current = next;
-                saveCachedSheetData(next);
-              }
-              accepted[name] = revisions[name];
-              saveAcceptedTabSyncRevisions(id, accepted);
-              update(id, name, {
-                status: "ready",
-                hasData: true,
-                updatedAt: new Date().toISOString(),
-                error: "",
-              });
-            } catch (reason) {
-              if (!current()) return;
-              if (reason instanceof AppError && reason.code === "session")
-                throw reason;
-              const message = errorMessage(reason);
-              update(id, name, { status: "error", error: message });
-              failures.push(message);
+            } finally {
+              advance();
             }
+          };
+          const hasPending = targets.some((name) =>
+            name === "retainers"
+              ? Boolean(loadRetainerDraft(id))
+              : name === "territories"
+                ? Boolean(loadTerritoryDraft(id)?.operations.length)
+                : Boolean(loadJournalDraft(id)?.operations.length),
+          );
+          if (flush && hasPending) {
+            // Related writes retain their ordering; only independent reads run together.
+            for (const name of targets) await syncResource(name);
+          } else {
+            const results = await Promise.allSettled(targets.map(syncResource));
+            const rejected = results.filter(
+              (result): result is PromiseRejectedResult =>
+                result.status === "rejected",
+            );
+            if (rejected.length)
+              throw (
+                rejected.find(
+                  (result) =>
+                    result.reason instanceof AppError &&
+                    result.reason.code === "session",
+                )?.reason || rejected[0].reason
+              );
           }
           if (current()) {
             ready.current = true;
@@ -413,6 +506,8 @@ export function useBackgroundSync(
           if (current()) {
             setRefreshing(false);
             setPhase("");
+            setProgress(null);
+            ctx.setRosterRefreshing(false);
           }
         }
       };
@@ -432,6 +527,7 @@ export function useBackgroundSync(
     ready.current = false;
     lock.current = null;
     setRefreshing(false);
+    setProgress(null);
     setError("");
     if (!characterId || !authenticated) return;
     const cache = loadCachedSheetData(characterId);
@@ -454,7 +550,14 @@ export function useBackgroundSync(
       resources[name] = {
         ...blank(),
         hasData,
-        status: hasData ? "cached" : "loading",
+        status: hasData
+          ? stateRef.current[characterId]?.[name]?.status === "ready"
+            ? "ready"
+            : "cached"
+          : "loading",
+        updatedAt: cached(name)
+          ? stateRef.current[characterId]?.[name]?.updatedAt || ""
+          : "",
       };
     }
     setStates((previous) => {
@@ -462,7 +565,7 @@ export function useBackgroundSync(
       stateRef.current = next;
       return next;
     });
-    void run({ force: true, flush: false });
+    void run({ flush: false });
     return () => {
       generation.current++;
       cancelCharacterReads(characterId);
@@ -541,6 +644,7 @@ export function useBackgroundSync(
     online,
     refreshing,
     phase,
+    progress,
     error:
       error || names.map((name) => resources[name].error).find(Boolean) || "",
     refreshNow: () => run({ force: true }),

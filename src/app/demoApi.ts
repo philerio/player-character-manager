@@ -9,7 +9,7 @@ import type {
 } from "../google-sheets-api";
 import { createMockBootstrap } from "./mockData";
 import { demoRole } from "./runtime";
-import { appStorage } from "./storage";
+import { appStorage, demoCampaignStorage } from "./storage";
 
 const dataKey = "server-data:v1";
 type DemoData = {
@@ -19,16 +19,19 @@ type DemoData = {
   backups: Record<string, Record<string, unknown>>;
 };
 function load(): DemoData {
-  const saved = appStorage.getItem(dataKey);
+  const saved =
+    demoCampaignStorage.getItem(dataKey) || appStorage.getItem(dataKey);
   if (saved) {
     try {
-      return JSON.parse(saved) as DemoData;
+      const data = JSON.parse(saved) as DemoData;
+      if (!demoCampaignStorage.getItem(dataKey)) save(data);
+      return data;
     } catch {
       /* Reset invalid demo data. */
     }
   }
-  const first = createMockBootstrap(demoRole);
-  const second = createMockBootstrap(demoRole);
+  const first = createMockBootstrap("player");
+  const second = createMockBootstrap("player");
   const otherId = "demo-character-2";
   first.characters.push({
     characterId: otherId,
@@ -56,7 +59,23 @@ function load(): DemoData {
   return data;
 }
 function save(data: DemoData) {
-  appStorage.setItem(dataKey, JSON.stringify(data));
+  demoCampaignStorage.setItem(dataKey, JSON.stringify(data));
+}
+function roleView(snapshot: SheetBootstrap): SheetBootstrap {
+  const currentPlayer = snapshot.players.find(
+    (player) => player.role === demoRole,
+  );
+  if (!currentPlayer) throw new Error("Demo account not found.");
+  return {
+    ...snapshot,
+    currentPlayer,
+    permissions: {
+      isDm: demoRole === "dm",
+      playerManagement: demoRole === "dm",
+      territories: demoRole === "dm" || currentPlayer.territoriesEnabled,
+      retainers: demoRole === "dm" || currentPlayer.retainersEnabled,
+    },
+  };
 }
 export function getDemoBootstrap(characterId?: string): SheetBootstrap {
   const data = load();
@@ -64,7 +83,7 @@ export function getDemoBootstrap(characterId?: string): SheetBootstrap {
     ? data.snapshots[characterId]
     : Object.values(data.snapshots)[0] || data.empty;
   if (!snapshot) throw new Error("This demo character no longer exists.");
-  return structuredClone(snapshot);
+  return structuredClone(roleView(snapshot));
 }
 
 /** Local fake campaign service. Unsupported operations fail explicitly. */
@@ -82,13 +101,17 @@ export async function demoRequest(
     const id = String(
       input.characterId || Object.keys(data.snapshots)[0] || "",
     );
-    const snapshot = data.snapshots[id] || (!id ? data.empty : undefined);
-    if (!snapshot) throw new Error("Demo character not found.");
+    const storedSnapshot = data.snapshots[id] || (!id ? data.empty : undefined);
+    if (!storedSnapshot) throw new Error("Demo character not found.");
+    const snapshot = roleView(storedSnapshot);
+    if (id) data.snapshots[id] = snapshot;
+    else data.empty = snapshot;
     const {
       action: _action,
       accessKey: _accessKey,
       sessionToken: _sessionToken,
       scoutingWebhookUrl: _webhook,
+      expectedUpdatedAt: _expectedUpdatedAt,
       ...payload
     } = input;
     const now = new Date().toISOString();
@@ -99,6 +122,22 @@ export async function demoRequest(
       retainers: 0,
       territories: 0,
     });
+    // Demo requests are serialized within this synchronous mutation section.
+    // The live Apps Script must compare and mutate under the same server lock.
+    if (input.expectedUpdatedAt !== undefined) {
+      const previous = action.startsWith("journal.")
+        ? snapshot.journal.find((row) => row.entryId === input.entryId)
+        : action.startsWith("retainer.")
+          ? snapshot.retainers.find(
+              (row) => row.retainerId === input.retainerId,
+            )
+          : undefined;
+      if (
+        !previous ||
+        (previous.updatedAt || previous.createdAt) !== input.expectedUpdatedAt
+      )
+        throw new Error("Conflict: record changed in the campaign.");
+    }
     let result: Record<string, unknown> = { ok: true };
     switch (action) {
       case "bootstrap":
@@ -498,7 +537,8 @@ export async function demoRequest(
           "This action is unavailable in the demo. Campaign services and uploads require a live connection.",
         );
     }
-    save(data);
+    // Reads must not rewrite shared campaign data while another tab is publishing.
+    if (options?.body) save(data);
     return Response.json(result);
   } catch (error) {
     return Response.json({

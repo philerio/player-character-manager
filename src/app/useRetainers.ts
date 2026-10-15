@@ -256,7 +256,12 @@ export function useRetainers(getContext: () => RetainersContext) {
       for (const row of deletes) {
         assertScope();
         if (remoteById.has(row.retainerId))
-          await deleteRetainer(characterId, row.retainerId);
+          await deleteRetainer(
+            characterId,
+            row.retainerId,
+            remoteById.get(row.retainerId)?.updatedAt ||
+              remoteById.get(row.retainerId)?.createdAt,
+          );
         // force-overwrite removals need an acknowledgement base for safe retries.
         let latest = loadRetainerDraft(characterId)!;
         if (
@@ -297,6 +302,9 @@ export function useRetainers(getContext: () => RetainersContext) {
             : await updateRetainer({
                 characterId,
                 retainerId: sent.retainerId,
+                expectedUpdatedAt:
+                  remoteById.get(sent.retainerId)?.updatedAt ||
+                  remoteById.get(sent.retainerId)?.createdAt,
                 ...retainerMutationInput(sent),
               });
         } catch (reason) {

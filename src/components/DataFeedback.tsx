@@ -48,12 +48,6 @@ export function ResourceFeedback({
     );
   return (
     <>
-      {state.status === "loading" && (
-        <div className="data-refresh-note" role="status">
-          <progress aria-label={`Refreshing ${name}`} /> Refreshing {name}…
-          Showing the saved working copy.
-        </div>
-      )}
       {state.status === "cached" && (
         <p className="data-refresh-note">
           Showing {name} saved on this device.
@@ -74,7 +68,27 @@ export function ResourceFeedback({
     </>
   );
 }
+export function CharacterLoadingIndicator({
+  name,
+  progress,
+}: {
+  name: string;
+  progress: SyncProgress | null;
+}) {
+  return (
+    <span className="character-loading-indicator" role="status">
+      <span>Updating…</span>
+      <progress
+        aria-label={`Loading data for ${name}`}
+        {...(progress && progress.total > 0
+          ? { value: progress.completed, max: progress.total }
+          : {})}
+      />
+    </span>
+  );
+}
 export function WorkflowStatus({
+  compact = false,
   confirmed,
   online,
   busy,
@@ -85,6 +99,7 @@ export function WorkflowStatus({
   progress,
   refresh,
 }: {
+  compact?: boolean;
   confirmed: boolean;
   online: boolean;
   busy: boolean;
@@ -103,7 +118,7 @@ export function WorkflowStatus({
   }, []);
   return (
     <aside
-      className={`workflow-status ${error ? "has-error" : ""}`}
+      className={`workflow-status ${compact ? "is-compact" : ""} ${error ? "has-error" : ""}`}
       aria-label="Data and save status"
       aria-busy={busy}
     >

@@ -9,11 +9,20 @@ export type ErrorCode =
   | "cancelled"
   | "uncertain"
   | "server";
+export type DataIssue = {
+  path: string;
+  expected: string;
+  received: string;
+  collection?: string;
+  recordId?: string;
+  recordIndex?: number;
+};
 export class AppError extends Error {
   constructor(
     public code: ErrorCode,
     message: string,
     public retryable = false,
+    public dataIssue?: DataIssue,
   ) {
     super(message);
     this.name = "AppError";

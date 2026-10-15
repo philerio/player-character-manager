@@ -206,6 +206,7 @@ export function useJournal(getContext: () => JournalContext) {
             await deleteJournalEntry({
               characterId: id,
               entryId: operation.entryId,
+              expectedUpdatedAt: server?.updatedAt,
             });
           remote.delete(operation.entryId);
         } else if (operation.entry) {
@@ -244,6 +245,7 @@ export function useJournal(getContext: () => JournalContext) {
             response = await updateJournalEntry({
               ...input,
               entryId: operation.entryId,
+              expectedUpdatedAt: server?.updatedAt,
             });
           remote.set(response.entryId, response);
         }

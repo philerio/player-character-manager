@@ -306,6 +306,11 @@ export function useWallet(
           "conflict",
           "New wallet edits were made while restoring. They are preserved. Review the ledger and confirm restore again if you still want to replace them.",
         );
+      if (result.characterId !== characterId)
+        throw new AppError(
+          "validation",
+          "The backup belongs to a different character. Your current wallet has been kept.",
+        );
       validateWalletBackup(
         result.transactions,
         result.recurringExpenses,

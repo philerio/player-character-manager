@@ -1,5 +1,7 @@
+import { DataDiagnostics } from "./DataDiagnostics";
 import {
   ResourceFeedback,
+  CharacterLoadingIndicator,
   WorkflowStatus,
   StorageFeedback,
   ActionFailureFeedback,
@@ -205,6 +207,42 @@ export function AppShell({
     recordTransaction,
     portraitViewer,
   } = controller;
+  const characterBusy =
+    background.refreshing ||
+    rosterRefreshing ||
+    retainerSyncing ||
+    territorySyncing ||
+    journalSyncing ||
+    profileSyncing;
+  const characterError =
+    background.error ||
+    retainerSyncError ||
+    territorySyncError ||
+    journalSyncError ||
+    profileSyncError;
+  const characterProgress = retainerSyncing
+    ? retainerProgress
+    : territorySyncing
+      ? territoryProgress
+      : journalSyncing
+        ? journalProgress
+        : background.progress;
+  const characterStatus = selectedCharacterId ? (
+    <WorkflowStatus
+      compact
+      confirmed={Object.values(background.resources).every(
+        (state) => state.status === "ready",
+      )}
+      online={background.online}
+      busy={characterBusy}
+      phase={background.phase}
+      error={characterError}
+      pending={retainerDraftDirty || territoryDraftDirty || journalDraftDirty}
+      dm={permissions.isDm && !dmOwnsSelectedCharacter}
+      progress={characterProgress}
+      refresh={syncWholeProfile}
+    />
+  ) : null;
   if (hasSheetsConnection() && !authenticated) {
     return passwordChangeToken ? (
       <FirstPasswordScreen onSave={onSaveFirstPassword} />
@@ -332,10 +370,22 @@ export function AppShell({
             <div className="character-heading">
               <button
                 className="character-button"
+                aria-label={selectedCharacter?.name || "Choose character"}
                 aria-expanded={characterMenu}
                 onClick={() => setCharacterMenu((open) => !open)}
               >
-                <span>{selectedCharacter?.name || "Choose character"}</span>
+                <span className="character-selector-label">
+                  <span>{selectedCharacter?.name || "Choose character"}</span>
+                  {characterBusy && (
+                    <CharacterLoadingIndicator
+                      name={selectedCharacter?.name || "selected character"}
+                      progress={characterProgress}
+                    />
+                  )}
+                  {!characterBusy && characterError && (
+                    <span className="character-status-hint">Action needed</span>
+                  )}
+                </span>
                 <ChevronDown size={18} />
               </button>
               {selectedCharacter && (
@@ -355,6 +405,8 @@ export function AppShell({
             {characterMenu &&
               (permissions.isDm ? (
                 <div className="character-menu dm-character-menu">
+                  {characterStatus}
+                  <DataDiagnostics characterId={selectedCharacterId} />
                   {selectedCharacter && hasSheetsConnection() && (
                     <div className="character-menu-sync-header">
                       <div className="character-menu-sync-name">
@@ -472,6 +524,7 @@ export function AppShell({
                 </div>
               ) : (
                 <div className="character-menu">
+                  {characterStatus}
                   {selectedCharacter && hasSheetsConnection() && (
                     <div className="character-menu-sync-header">
                       <div className="character-menu-sync-name">
@@ -590,42 +643,16 @@ export function AppShell({
         <div className="page-content">
           <StorageFeedback />
           <ActionFailureFeedback />
-          {selectedCharacterId && (
-            <WorkflowStatus
-              confirmed={Object.values(background.resources).every(
-                (state) => state.status === "ready",
-              )}
-              online={background.online}
-              busy={
-                background.refreshing ||
-                retainerSyncing ||
-                territorySyncing ||
-                journalSyncing ||
-                profileSyncing
-              }
-              phase={background.phase}
-              error={
-                background.error ||
-                retainerSyncError ||
-                territorySyncError ||
-                journalSyncError ||
-                profileSyncError
-              }
-              pending={
-                retainerDraftDirty || territoryDraftDirty || journalDraftDirty
-              }
-              dm={permissions.isDm && !dmOwnsSelectedCharacter}
-              progress={
-                retainerSyncing
-                  ? retainerProgress
-                  : territorySyncing
-                    ? territoryProgress
-                    : journalSyncing
-                      ? journalProgress
-                      : null
-              }
-              refresh={syncWholeProfile}
-            />
+          {characterError && !characterMenu && (
+            <div className="data-error-note" role="alert">
+              <span>{characterError}</span>
+              <button
+                className="secondary-action"
+                onClick={() => setCharacterMenu(true)}
+              >
+                Open character status
+              </button>
+            </div>
           )}
           {section === "wallet" && (
             <WalletView
