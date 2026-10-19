@@ -7,3 +7,8 @@ dist
 # Live campaign workbook stays local; fixtures use synthetic records.
 playerData/
 *.tsbuildinfo
+
+# Local Cloudflare state and sensitive migration outputs.
+.wrangler/
+.dev.vars
+migration-output/

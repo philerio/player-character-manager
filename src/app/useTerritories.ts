@@ -6,7 +6,10 @@ import {
   definitelyNotApplied,
   type SyncProgress,
 } from "./errors";
-import { acknowledgeTerritoryOperation } from "./territoryStorage";
+import {
+  acknowledgeTerritoryOperation,
+  checkpointTerritoryHex,
+} from "./territoryStorage";
 import { loadCachedSheetData } from "../google-sheets-api";
 import type { AppModal } from "./core";
 import { hasSheetsConnection } from "../google-sheets-api";
@@ -453,8 +456,12 @@ export function useTerritories(
     setTerritorySyncing(true);
     setTerritorySyncError("");
     try {
-      for (const operation of draft.operations) {
+      for (const queued of draft.operations) {
         assertScope();
+        const operation = loadTerritoryDraft(characterId)?.operations.find(
+          (row) => row.id === queued.id,
+        );
+        if (!operation) continue;
         let confirmedMission:
           SheetScoutingMission | SheetCustomMission | undefined;
         if (operation.kind === "tithe") {
@@ -473,16 +480,24 @@ export function useTerritories(
             pastureFields: operation.pastureFields,
           });
         } else if (operation.kind === "hex") {
-          await upsertTerritoryHex({
+          const revealOnly =
+            operation.revealOnly || operation.dmRevealed !== undefined;
+          const result = await upsertTerritoryHex({
             characterId,
             territoryId: operation.territoryId,
             hexNumber: operation.hexNumber,
             mapX: operation.mapX,
             mapY: operation.mapY,
-            title: operation.title,
-            contents: operation.contents,
+            title: revealOnly ? undefined : operation.title,
+            contents: revealOnly ? undefined : operation.contents,
             dmRevealed: operation.dmRevealed,
+            revealOnly,
+            expectedUpdatedAt: revealOnly
+              ? undefined
+              : operation.expectedUpdatedAt,
           });
+          assertScope();
+          checkpointTerritoryHex(characterId, operation, result.hex);
         } else if (operation.kind === "scouting-start") {
           const startedMission = await startScoutingMission({
             characterId,

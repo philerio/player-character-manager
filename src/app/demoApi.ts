@@ -1,3 +1,4 @@
+import { territoryHexKey } from "./territoryRules";
 import type {
   SheetBootstrap,
   SheetSyncTab,
@@ -131,10 +132,21 @@ export async function demoRequest(
           ? snapshot.retainers.find(
               (row) => row.retainerId === input.retainerId,
             )
-          : undefined;
+          : action === "territory.hex.upsert"
+            ? snapshot.territoryHexes.find(
+                (row) =>
+                  row.territoryId === input.territoryId &&
+                  territoryHexKey(row.hexNumber) ===
+                    territoryHexKey(input.hexNumber),
+              )
+            : undefined;
       if (
-        !previous ||
-        (previous.updatedAt || previous.createdAt) !== input.expectedUpdatedAt
+        (!previous &&
+          !(
+            action === "territory.hex.upsert" && input.expectedUpdatedAt === ""
+          )) ||
+        (previous?.updatedAt || previous?.createdAt || "") !==
+          input.expectedUpdatedAt
       )
         throw new Error("Conflict: record changed in the campaign.");
     }
@@ -406,17 +418,25 @@ export async function demoRequest(
           input.hexId
             ? h.hexId === input.hexId
             : h.territoryId === input.territoryId &&
-              Number(h.hexNumber) === Number(input.hexNumber),
+              territoryHexKey(h.hexNumber) === territoryHexKey(input.hexNumber),
         );
         const hex: SheetTerritoryHex = {
           ...previous,
-          ...payload,
+          ...(input.revealOnly ? { dmRevealed: input.dmRevealed } : payload),
           hexId: previous?.hexId || uuid(),
           characterId: id,
           territoryId: String(input.territoryId),
           hexNumber: String(input.hexNumber ?? previous?.hexNumber),
-          mapX: Number(input.mapX ?? previous?.mapX),
-          mapY: Number(input.mapY ?? previous?.mapY),
+          mapX: Number(
+            input.revealOnly && previous
+              ? previous.mapX
+              : (input.mapX ?? previous?.mapX),
+          ),
+          mapY: Number(
+            input.revealOnly && previous
+              ? previous.mapY
+              : (input.mapY ?? previous?.mapY),
+          ),
           createdAt: previous?.createdAt || now,
           updatedAt: now,
           isDiscovered: true,

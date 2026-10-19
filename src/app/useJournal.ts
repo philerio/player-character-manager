@@ -62,16 +62,39 @@ export function useJournal(getContext: () => JournalContext) {
     characterId: string,
   ) {
     const previous = loadJournalDraft(characterId);
+    const pendingCreate = previous?.operations.find(
+      (row) =>
+        row.kind === "create" &&
+        row.entryId === operation.entryId &&
+        !previous.uncertain?.includes(row.id),
+    );
+    const operations =
+      pendingCreate && operation.kind !== "create"
+        ? previous!.operations
+            .filter(
+              (row) =>
+                row.entryId !== operation.entryId ||
+                row.id === pendingCreate.id,
+            )
+            .flatMap((row) =>
+              row.id === pendingCreate.id
+                ? operation.kind === "delete"
+                  ? []
+                  : [{ ...row, entry: operation.entry }]
+                : [row],
+            )
+        : [...(previous?.operations || []), operation];
     saveJournalDraft({
       characterId,
       entries,
       baseEntries: previous?.baseEntries || journalEntries,
-      operations: [...(previous?.operations || []), operation],
+      operations,
       uncertain: previous?.uncertain,
       updatedAt: new Date().toISOString(),
     });
     setJournalEntries(entries);
-    setJournalDraftDirty(true);
+    if (!operations.length) clearJournalDraft(characterId);
+    setJournalDraftDirty(operations.length > 0);
     setJournalSyncError("");
     persistJournalCache(entries);
   }
@@ -232,12 +255,28 @@ export function useJournal(getContext: () => JournalContext) {
             } catch (reason) {
               if (getDraftScope() === scope && definitelyNotApplied(reason)) {
                 const pending = loadJournalDraft(id)!;
-                saveJournalDraft({
+                const entry = pending.entries.find(
+                  (row) => row.entryId === operation.entryId,
+                );
+                const operations = pending.operations
+                  .filter(
+                    (row) =>
+                      row.entryId !== operation.entryId ||
+                      (entry && row.id === operation.id),
+                  )
+                  .map((row) =>
+                    row.id === operation.id ? { ...row, entry } : row,
+                  );
+                const next = {
                   ...pending,
+                  operations,
                   uncertain: pending.uncertain?.filter(
                     (value) => value !== operation.id,
                   ),
-                });
+                };
+                if (operations.length) saveJournalDraft(next);
+                else clearJournalDraft(id);
+                if (active()) setJournalDraftDirty(operations.length > 0);
               }
               throw reason;
             }

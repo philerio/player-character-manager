@@ -202,7 +202,8 @@ export function TerritoriesView({
                   <div className="large-crest"><Landmark size={28} /></div>
                   <div className="territory-name">
                     <span>{territory.hexNumber ? `Hex ${territory.hexNumber}` : "Hex not assigned"}</span>
-                  <h2>{territory.name}</h2>
+                    <h2>{territory.name}</h2>
+                    <small role="status">No map has been assigned to this territory.</small>
                   </div>
                 </div>
               )}

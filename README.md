@@ -4,6 +4,13 @@ A React/TypeScript app for campaign wallets, journals, hirelings, fighting force
 territories, and scouting. Live campaign data comes from an external Google Apps
 Script service; working copies and wallet ledgers persist in the browser.
 
+## Cloudflare D1 migration
+
+A local/staging D1 backend is available. Production still defaults to Google Sheets.
+See [migration setup, supported operations, and cutover requirements](docs/d1-migration.md)
+and [the supplied workbook validation report](docs/d1-import-validation.md).
+Wallet backup/restore and explicit wallet file transfer are implemented; the migration guide includes the transfer steps. See [hosted staging setup](docs/d1-deployment.md) to connect the frontend to a Worker and remote D1 database.
+
 ## Run locally
 
 Use Node 24 and npm. This repository includes `.nvmrc`:

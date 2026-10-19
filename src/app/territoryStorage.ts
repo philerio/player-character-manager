@@ -32,6 +32,8 @@ export type TerritoryLocalOperation =
       title?: string;
       contents?: string;
       dmRevealed?: boolean;
+      revealOnly?: boolean;
+      expectedUpdatedAt?: string;
     }
   | {
       id: string;
@@ -83,10 +85,11 @@ export type TerritoryLocalDraft = {
   updatedAt: string;
 };
 
-/** DM reveals are additive visibility changes and must not wait for local field/scouting edits. */
+/** Published maps and reveals must not wait for local field/scouting edits. */
 export function mergePublishedTerritoryReveals(
   draft: TerritoryLocalDraft,
   remote: SheetTerritoryHex[],
+  remoteTerritories: SheetTerritory[] = [],
 ): TerritoryLocalDraft {
   const key = (hex: SheetTerritoryHex) =>
     `${hex.territoryId}:${territoryHexKey(hex.hexNumber)}`;
@@ -103,7 +106,27 @@ export function mergePublishedTerritoryReveals(
       isDiscovered: true,
     });
   }
-  return { ...draft, territoryHexes: [...hexes.values()] };
+  const published = new Map(
+    remoteTerritories
+      .filter((territory) => territory.characterId === draft.characterId)
+      .map((territory) => [territory.territoryId, territory]),
+  );
+  const territories = draft.territories.map((territory) => {
+    const source = published.get(territory.territoryId);
+    if (!source || territory.mapUrl || territory.mapFileId) return territory;
+    // Fill an unconfigured map without replacing a more recent local upload
+    // when an older status request finishes. Other draft fields remain local.
+    return {
+      ...territory,
+      mapUrl: source.mapUrl,
+      mapFileId: source.mapFileId,
+      mapFileName: source.mapFileName,
+      poiMapUrl: source.poiMapUrl,
+      poiMapFileId: source.poiMapFileId,
+      poiMapFileName: source.poiMapFileName,
+    };
+  });
+  return { ...draft, territories, territoryHexes: [...hexes.values()] };
 }
 
 const TERRITORY_DRAFT_PREFIX = "pcm-territory-draft:v1:";
@@ -391,6 +414,50 @@ export function migrateExistingScoutingTimers(
   if (changed) saveLocalScoutingTimers(characterId, nextTimers);
 }
 
+/** Persist a confirmed version for later queued edits, including edits made during a request. */
+export function checkpointTerritoryHex(
+  characterId: string,
+  sent: Extract<TerritoryLocalOperation, { kind: "hex" }>,
+  hex: SheetTerritoryHex,
+) {
+  const latest = loadTerritoryDraft(characterId);
+  if (!latest)
+    throw new Error("The territory draft disappeared during synchronization.");
+  const matches = (row: { territoryId: string; hexNumber: string }) =>
+    row.territoryId === sent.territoryId &&
+    territoryHexKey(row.hexNumber) === territoryHexKey(sent.hexNumber);
+  const hasLaterEdits = latest.operations.some(
+    (row) =>
+      (row.kind === "fields" &&
+        [sent.localHexId, hex.hexId].includes(row.hexId)) ||
+      (row.kind === "hex" &&
+        row.id !== sent.id &&
+        matches(row) &&
+        row.dmRevealed === undefined &&
+        !row.revealOnly),
+  );
+  const next = {
+    ...latest,
+    operations: latest.operations.map((row) =>
+      row.kind === "hex" && matches(row) && row.id !== sent.id
+        ? {
+            ...row,
+            localHexId: hex.hexId,
+            expectedUpdatedAt: hex.updatedAt || hex.createdAt,
+          }
+        : row,
+    ),
+    territoryHexes: latest.territoryHexes.map((row) =>
+      matches(row)
+        ? hasLaterEdits
+          ? { ...row, hexId: hex.hexId, updatedAt: hex.updatedAt }
+          : { ...row, ...hex }
+        : row,
+    ),
+  };
+  saveTerritoryDraft(next);
+  return next;
+}
 export function acknowledgeTerritoryOperation(
   characterId: string,
   operation: TerritoryLocalOperation,

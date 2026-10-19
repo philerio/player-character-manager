@@ -1,3 +1,4 @@
+import { apiBackend, isDemoMode } from "./runtime";
 import { retainerDraftHasChanges } from "./retainerStorage";
 import { loadJournalDraft } from "./journalStorage";
 import { useBackgroundSync } from "./useBackgroundSync";
@@ -132,6 +133,8 @@ export function useAppController() {
     recordTransaction,
     deleteWalletTransaction,
     recordPurchase,
+    exportCurrentWallet,
+    importWalletFile,
     backUpCurrentWallet,
     restoreCurrentWalletBackup,
     cancelSchedule,
@@ -149,6 +152,10 @@ export function useAppController() {
     recurringExpenses,
     setRecurringExpenses,
     walletLoadedCharacterIdRef,
+    walletRecovering,
+    walletRecoveryError,
+    walletBackupConflict,
+    retryWalletRecovery,
     walletBackupBusy,
     setWalletBackupBusy,
     walletBackupMessage,
@@ -336,23 +343,28 @@ export function useAppController() {
       if (data.characters.length) {
         selectedCharacterIdRef.current = data.selectedCharacterId;
         setSelectedCharacterId(data.selectedCharacterId);
-        const localWallet = migrateLegacyWalletToLocal(
-          data.selectedCharacterId,
-          {
-            pp: Number(data.balance.pp) || 0,
-            gp: Number(data.balance.gp) || 0,
-            sp: Number(data.balance.sp) || 0,
-            cp: Number(data.balance.cp) || 0,
-          },
-          data.transactions || [],
-          data.recurringExpenses || [],
-        );
-        walletLoadedCharacterIdRef.current = data.selectedCharacterId;
-        setPlatinum(localWallet.balance.pp);
-        setGold(localWallet.balance.gp);
-        setSilver(localWallet.balance.sp);
-        setCopper(localWallet.balance.cp);
-        setTransactions(localWallet.transactions);
+        const localWallet =
+          apiBackend === "d1" && !isDemoMode
+            ? loadLocalWalletState(data.selectedCharacterId)
+            : migrateLegacyWalletToLocal(
+                data.selectedCharacterId,
+                {
+                  pp: Number(data.balance.pp) || 0,
+                  gp: Number(data.balance.gp) || 0,
+                  sp: Number(data.balance.sp) || 0,
+                  cp: Number(data.balance.cp) || 0,
+                },
+                data.transactions || [],
+                data.recurringExpenses || [],
+              );
+        walletLoadedCharacterIdRef.current = localWallet
+          ? data.selectedCharacterId
+          : "";
+        setPlatinum(localWallet?.balance.pp || 0);
+        setGold(localWallet?.balance.gp || 0);
+        setSilver(localWallet?.balance.sp || 0);
+        setCopper(localWallet?.balance.cp || 0);
+        setTransactions(localWallet?.transactions || []);
         setJournalEntries(
           loadJournalDraft(data.selectedCharacterId)?.entries ||
             data.journal ||
@@ -363,7 +375,7 @@ export function useAppController() {
             loadJournalDraft(data.selectedCharacterId)?.operations.length,
           ),
         );
-        setRecurringExpenses(localWallet.recurringExpenses);
+        setRecurringExpenses(localWallet?.recurringExpenses || []);
         const savedRetainerDraft = loadRetainerDraft(data.selectedCharacterId);
         if (savedRetainerDraft) {
           setRetainers(savedRetainerDraft.retainers);
@@ -441,7 +453,10 @@ export function useAppController() {
     const initialLocalWallet = initialCharacterId
       ? loadLocalWalletState(initialCharacterId)
       : null;
-    walletLoadedCharacterIdRef.current = initialCharacterId;
+    walletLoadedCharacterIdRef.current =
+      apiBackend === "d1" && !isDemoMode && !initialLocalWallet
+        ? ""
+        : initialCharacterId;
     setPlatinum(initialLocalWallet?.balance.pp || 0);
     setGold(initialLocalWallet?.balance.gp || 0);
     setSilver(initialLocalWallet?.balance.sp || 0);
@@ -477,7 +492,10 @@ export function useAppController() {
           const recoveredWallet = firstCharacterId
             ? loadLocalWalletState(firstCharacterId)
             : null;
-          walletLoadedCharacterIdRef.current = firstCharacterId;
+          walletLoadedCharacterIdRef.current =
+            apiBackend === "d1" && !isDemoMode && !recoveredWallet
+              ? ""
+              : firstCharacterId;
           setPlatinum(recoveredWallet?.balance.pp || 0);
           setGold(recoveredWallet?.balance.gp || 0);
           setSilver(recoveredWallet?.balance.sp || 0);
@@ -798,9 +816,19 @@ export function useAppController() {
     copper,
     coinWeight,
     transactions,
+    walletReady: Boolean(
+      selectedCharacterId &&
+      walletLoadedCharacterIdRef.current === selectedCharacterId,
+    ),
+    walletRecovering,
+    walletRecoveryError,
+    walletBackupConflict,
+    retryWalletRecovery,
     walletBackupBusy,
     walletBackupMessage,
     walletBackupError,
+    exportCurrentWallet,
+    importWalletFile,
     backUpCurrentWallet,
     restoreCurrentWalletBackup,
     territories,

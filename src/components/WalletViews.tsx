@@ -155,6 +155,15 @@ export function WalletView({
   backupError,
   onBackup,
   onRestore,
+  transferEnabled,
+  walletReady,
+  walletRecovering,
+  walletRecoveryError,
+  backupConflict,
+  onRetryWallet,
+  restoreEnabled,
+  onExport,
+  onImport,
 }: {
   platinum: number;
   gold: number;
@@ -166,12 +175,22 @@ export function WalletView({
   onSeeFullLedger: () => void;
   onManageRecurringExpenses: () => void;
   backupEnabled: boolean;
-  backupBusy: "backup" | "restore" | "";
+  backupBusy: "backup" | "restore" | "import" | "";
   backupMessage: string;
   backupError: string;
   onBackup: () => Promise<void>;
   onRestore: () => Promise<void>;
+  transferEnabled: boolean;
+  walletReady: boolean;
+  walletRecovering: boolean;
+  walletRecoveryError: string;
+  backupConflict: boolean;
+  onRetryWallet: () => void;
+  restoreEnabled: boolean;
+  onExport: () => void;
+  onImport: (file: File) => Promise<void>;
 }) {
+  const walletFileInput = useRef<HTMLInputElement>(null);
   const formatCoinAmount = (amount: number) => amount.toLocaleString();
   const coinAmountClass = (amount: number) => {
     const digits = Math.abs(Math.trunc(amount)).toString().length;
@@ -182,7 +201,12 @@ export function WalletView({
 
   return (
     <>
-      <section className="wallet-hero ornamental-card">
+      {!walletReady && <section className="ornamental-card" aria-label="Wallet status">
+        <h2>{walletRecovering ? "Loading wallet…" : "Wallet unavailable"}</h2>
+        <p role={walletRecoveryError ? "alert" : "status"}>{walletRecoveryError || "Recovering this character's saved wallet before enabling edits. You can also import a wallet file."}</p>
+        {!walletRecovering && <button onClick={onRetryWallet}>Retry loading wallet</button>}
+      </section>}
+      {walletReady && <section className="wallet-hero ornamental-card">
         <div className="watermark-coins">
           <Coins size={146} strokeWidth={0.7} />
         </div>
@@ -229,7 +253,7 @@ export function WalletView({
             <ShoppingCart size={20} /> Purchase
           </button>
         </div>
-      </section>
+      </section>}
 
       <div className="dashboard-grid">
         <section className="ornamental-card ledger-card">
@@ -242,6 +266,7 @@ export function WalletView({
               <button
                 className="manage-recurring-button"
                 onClick={onManageRecurringExpenses}
+                disabled={!walletReady}
               >
                 <ReceiptText size={15} />
                 <span>Manage Recurring Expenses</span>
@@ -249,30 +274,52 @@ export function WalletView({
               <button
                 className="manage-recurring-button"
                 disabled={!backupEnabled || Boolean(backupBusy)}
-                onClick={() => void onBackup().catch((error) =>
-                  window.alert(error instanceof Error ? error.message : "Could not back up the ledger.")
-                )}
-                title="Save this local ledger to the workbook as a backup"
+                onClick={() => void onBackup().catch(() => {})}
+                title="Save this local ledger as a campaign backup"
               >
                 <Upload size={15} />
-                <span>{backupBusy === "backup" ? "Backing up…" : "Back Up Ledger"}</span>
+                <span>{backupBusy === "backup" ? "Backing up…" : backupConflict ? "Resolve Backup Conflict" : "Back Up Ledger"}</span>
               </button>
               <button
                 className="manage-recurring-button"
-                disabled={!backupEnabled || Boolean(backupBusy)}
-                onClick={() => void onRestore().catch((error) =>
-                  window.alert(error instanceof Error ? error.message : "Could not restore the ledger backup.")
-                )}
-                title="Replace this device's local ledger with the saved workbook backup"
+                disabled={!restoreEnabled || Boolean(backupBusy)}
+                onClick={() => void onRestore().catch(() => {})}
+                title="Replace this device's local ledger with the saved campaign backup"
               >
                 <ScrollText size={15} />
                 <span>{backupBusy === "restore" ? "Restoring…" : "Restore Backup"}</span>
               </button>
+              <button
+                className="manage-recurring-button"
+                disabled={!transferEnabled || !walletReady || Boolean(backupBusy)}
+                onClick={onExport}
+              >
+                Export Wallet
+              </button>
+              <button
+                className="manage-recurring-button"
+                disabled={!transferEnabled || Boolean(backupBusy)}
+                onClick={() => walletFileInput.current?.click()}
+              >
+                {backupBusy === "import" ? "Importing…" : "Import Wallet"}
+              </button>
+              <input
+                ref={walletFileInput}
+                type="file"
+                accept="application/json,.json"
+                hidden
+                aria-label="Import wallet file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) void onImport(file).catch(() => {});
+                }}
+              />
               <ScrollText size={24} />
             </div>
           </div>
-          {backupError && <p className="form-error">{backupError}</p>}
-          {backupMessage && <p className="sync-success">{backupMessage}</p>}
+          {backupError && <p className="form-error" role="alert">{backupError}</p>}
+          {backupMessage && <p className="sync-success" role="status">{backupMessage}</p>}
           <div className="transaction-list">
             {transactions.slice(0, 4).map((item) => (
               <div className="transaction" key={item.id}>
@@ -289,11 +336,11 @@ export function WalletView({
                 </strong>
               </div>
             ))}
-            {!transactions.length && (
+            {walletReady && !transactions.length && (
               <p className="empty-ledger">No transactions have been recorded.</p>
             )}
           </div>
-          <button className="full-ledger-button" onClick={onSeeFullLedger}>
+          <button className="full-ledger-button" disabled={!walletReady} onClick={onSeeFullLedger}>
             <ScrollText size={18} />
             See full ledger
           </button>

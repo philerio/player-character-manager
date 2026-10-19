@@ -70,13 +70,61 @@ export function requestCampaign(
           signal: attemptController.signal,
         });
         if (!response.ok) {
-          if (response.status === 401) throw serverError("session expired");
-          if (response.status === 403) throw serverError("permission denied");
-          throw new AppError(
-            "server",
-            `The campaign service returned an error (${response.status}). Your working copy has been kept.`,
-            !write && response.status >= 500,
-          );
+          const failure = await response
+            .clone()
+            .json()
+            .catch(() => null);
+          const message =
+            typeof failure?.error === "string" ? failure.error : "";
+          const rawId =
+            failure?.requestId || response.headers.get("X-Request-ID");
+          const requestId =
+            typeof rawId === "string" && /^[a-f0-9-]{36}$/i.test(rawId)
+              ? rawId
+              : undefined;
+          let error: AppError;
+          if (response.status === 401) error = serverError("session expired");
+          else if (response.status === 403)
+            error = serverError("permission denied");
+          else if (response.status === 404)
+            error = new AppError(
+              "not-found",
+              message || "The requested campaign data was not found.",
+            );
+          else if (response.status === 409) error = serverError("conflict");
+          else if ([400, 405, 413, 422].includes(response.status))
+            error = new AppError(
+              "rejected",
+              message ||
+                "The campaign rejected this request. Check the entered values and try again.",
+            );
+          else if (response.status === 429) {
+            error = new AppError(
+              "rate-limit",
+              message || "Too many requests. Wait before trying again.",
+            );
+            const retryAfter = response.headers.get("Retry-After");
+            if (retryAfter) {
+              const seconds = /^\d+$/.test(retryAfter)
+                ? Number(retryAfter)
+                : Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000);
+              if (Number.isFinite(seconds))
+                error.retryAfterSeconds = Math.max(0, seconds);
+            }
+          } else if (response.status === 501)
+            error = new AppError(
+              "unsupported",
+              message ||
+                "This operation is not available on the selected campaign service yet.",
+            );
+          else
+            error = new AppError(
+              "server",
+              `The campaign service returned an error (${response.status}). Your working copy has been kept.${requestId ? ` Reference: ${requestId}.` : ""}`,
+              !write && response.status >= 500,
+            );
+          error.requestId = requestId;
+          throw error;
         }
         let data: any;
         try {
@@ -122,7 +170,7 @@ export function requestCampaign(
             ? reason
             : controller.signal.aborted
               ? new AppError("cancelled", "This request was superseded.")
-              : write
+              : write && action !== "wallet.backup.load"
                 ? new AppError(
                     "uncertain",
                     "The campaign may have received this change, but confirmation was lost. Your draft is kept. Check the campaign copy before retrying to avoid duplicates.",

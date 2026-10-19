@@ -805,7 +805,10 @@ button {
 
 .ledger-heading-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
   gap: 18px;
 }
 

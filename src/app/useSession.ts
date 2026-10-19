@@ -1,3 +1,5 @@
+import { AppError } from "./errors";
+import { apiBackend, isDemoMode } from "./runtime";
 import { loadJournalDraft } from "./journalStorage";
 import type { AppModal, DataStatus } from "./core";
 
@@ -291,8 +293,7 @@ export function useSession(getContext: () => SessionContext) {
       });
     }
 
-    // A brand-new character has no character-specific campaign data yet.
-    walletLoadedCharacterIdRef.current = character.characterId;
+    // A retry can return a character whose wallet already exists on another device.
     const emptyWallet: LocalWalletState = {
       version: 1,
       characterId: character.characterId,
@@ -301,15 +302,20 @@ export function useSession(getContext: () => SessionContext) {
       recurringExpenses: [],
       savedAt: new Date().toISOString(),
     };
-    saveLocalWalletState(emptyWallet);
-    setPlatinum(0);
-    setGold(0);
-    setSilver(0);
-    setCopper(0);
-    setTransactions([]);
+    const wallet =
+      apiBackend === "d1" && !isDemoMode
+        ? loadLocalWalletState(character.characterId)
+        : emptyWallet;
+    walletLoadedCharacterIdRef.current = wallet ? character.characterId : "";
+    if (wallet) saveLocalWalletState(wallet);
+    setPlatinum(wallet?.balance.pp || 0);
+    setGold(wallet?.balance.gp || 0);
+    setSilver(wallet?.balance.sp || 0);
+    setCopper(wallet?.balance.cp || 0);
+    setTransactions(wallet?.transactions || []);
     setJournalEntries([]);
     setJournalDraftDirty(false);
-    setRecurringExpenses([]);
+    setRecurringExpenses(wallet?.recurringExpenses || []);
     setRetainers([]);
     setRetainerDraftDirty(false);
     setTerritories([]);
@@ -439,7 +445,8 @@ export function useSession(getContext: () => SessionContext) {
       // No server request is made when this device has never cached the
       // character. Preserve any local working drafts that do exist.
       const localWallet = loadLocalWalletState(characterId);
-      walletLoadedCharacterIdRef.current = characterId;
+      walletLoadedCharacterIdRef.current =
+        apiBackend === "d1" && !isDemoMode && !localWallet ? "" : characterId;
       setPlatinum(localWallet?.balance.pp || 0);
       setGold(localWallet?.balance.gp || 0);
       setSilver(localWallet?.balance.sp || 0);
@@ -480,7 +487,10 @@ export function useSession(getContext: () => SessionContext) {
     setDataStatus(hasSheetsConnection() ? "cached" : "demo");
   }
 
-  async function deleteCharacter() {
+  async function deleteCharacter(input?: {
+    characterId: string;
+    expectedVersion?: number;
+  }) {
     const {
       selectedCharacter,
       setCharacterMenu,
@@ -505,7 +515,15 @@ export function useSession(getContext: () => SessionContext) {
 
     if (!selectedCharacter) return;
     const deletedCharacterId = selectedCharacter.characterId;
-    await deleteSheetCharacter(deletedCharacterId);
+    if (input && input.characterId !== deletedCharacterId)
+      throw new AppError(
+        "cancelled",
+        "The selected character changed. Reopen the character dialog before deleting.",
+      );
+    await deleteSheetCharacter(
+      deletedCharacterId,
+      input ? input.expectedVersion : selectedCharacter.version,
+    );
     deleteLocalWalletState(deletedCharacterId);
 
     const remainingCharacters = characters.filter(
@@ -559,7 +577,10 @@ export function useSession(getContext: () => SessionContext) {
       return;
     cacheBaseRef.current = data;
     const nextLocalWallet = loadLocalWalletState(nextCharacterId);
-    walletLoadedCharacterIdRef.current = nextCharacterId;
+    walletLoadedCharacterIdRef.current =
+      apiBackend === "d1" && !isDemoMode && !nextLocalWallet
+        ? ""
+        : nextCharacterId;
     setPlatinum(nextLocalWallet?.balance.pp || 0);
     setGold(nextLocalWallet?.balance.gp || 0);
     setSilver(nextLocalWallet?.balance.sp || 0);
@@ -633,6 +654,8 @@ export function useSession(getContext: () => SessionContext) {
   }
 
   async function updateCharacter(input: {
+    characterId?: string;
+    expectedVersion?: number;
     name: string;
     className: string;
     level: number;
@@ -640,9 +663,20 @@ export function useSession(getContext: () => SessionContext) {
     const { selectedCharacter, setModal } = getContext();
 
     if (!selectedCharacter) return;
+    if (
+      input.characterId &&
+      input.characterId !== selectedCharacter.characterId
+    )
+      throw new AppError(
+        "cancelled",
+        "The selected character changed. Reopen the character dialog before saving.",
+      );
     const character = await updateSheetCharacter({
       characterId: selectedCharacter.characterId,
       ...input,
+      expectedVersion: Object.hasOwn(input, "expectedVersion")
+        ? input.expectedVersion
+        : selectedCharacter.version,
     });
     setCharacters((current) => {
       const nextCharacters = current.map((item) =>

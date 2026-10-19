@@ -1,4 +1,7 @@
 import { AppError } from "./errors";
+import { apiBackend, isDemoMode } from "./runtime";
+import { canonicalJSON } from "../../shared/records.mjs";
+import { downloadWalletTransfer, readWalletTransfer } from "./walletTransfer";
 import { loadLocalWalletState } from "./wallet";
 import { validateWalletBackup } from "./validation";
 import type { AppModal } from "./core";
@@ -7,7 +10,9 @@ import { recurringOccurrenceDate } from "./wallet";
 import { useEffect, useRef, useState } from "react";
 import {
   backupLocalWallet,
+  getSessionToken,
   loadLocalWalletBackup,
+  loadWalletData,
   type SheetCharacter,
   type SheetTransaction,
   type SheetRecurringExpense,
@@ -26,6 +31,7 @@ import {
   type Transaction,
   type LocalWalletState,
   walletBalanceFromTransactions,
+  mapSheetTransactions,
   saveLocalWalletState,
 } from "./wallet";
 
@@ -53,10 +59,170 @@ export function useWallet(
   >([]);
   const walletLoadedCharacterIdRef = useRef("");
   const [walletBackupBusy, setWalletBackupBusy] = useState<
-    "backup" | "restore" | ""
+    "backup" | "restore" | "import" | ""
   >("");
   const [walletBackupMessage, setWalletBackupMessage] = useState("");
   const [walletBackupError, setWalletBackupError] = useState("");
+
+  const [walletRecovering, setWalletRecovering] = useState(false);
+  const [walletRecoveryError, setWalletRecoveryError] = useState("");
+  const [walletRecoveryRetry, setWalletRecoveryRetry] = useState(0);
+  const [walletBackupConflict, setWalletBackupConflict] = useState(false);
+  const d1Wallet = apiBackend === "d1" && !isDemoMode;
+  const operationRef = useRef(false);
+  const pendingBackupRef = useRef<{ key: string; mutationId: string } | null>(
+    null,
+  );
+  const liveWalletRef = useRef({ transactions, recurringExpenses });
+  liveWalletRef.current = { transactions, recurringExpenses };
+
+  function captureWalletScope() {
+    const context = getContext();
+    const characterId = context.selectedCharacter?.characterId || "";
+    const generation = context.characterLoadRequestRef?.current;
+    const session = getSessionToken();
+    return {
+      characterId,
+      current: () =>
+        getContext().selectedCharacterIdRef.current === characterId &&
+        getContext().characterLoadRequestRef?.current === generation &&
+        getSessionToken() === session,
+    };
+  }
+
+  function replaceWallet(
+    characterId: string,
+    wallet: Pick<LocalWalletState, "transactions" | "recurringExpenses">,
+    backupId = loadLocalWalletState(characterId)?.backupId,
+  ) {
+    const balance = walletBalanceFromTransactions(wallet.transactions);
+    saveLocalWalletState(
+      {
+        version: 1,
+        characterId,
+        balance,
+        ...wallet,
+        backupId,
+        savedAt: new Date().toISOString(),
+      },
+      true,
+    );
+    walletLoadedCharacterIdRef.current = characterId;
+    setTransactions(wallet.transactions);
+    setRecurringExpenses(wallet.recurringExpenses);
+    setPlatinum(balance.pp);
+    setGold(balance.gp);
+    setSilver(balance.sp);
+    setCopper(balance.cp);
+    setWalletRecoveryError("");
+    setWalletBackupConflict(false);
+  }
+
+  function requireLoadedWallet(characterId: string) {
+    if (walletLoadedCharacterIdRef.current !== characterId)
+      throw new AppError(
+        "rejected",
+        "Wait for this character's wallet to finish loading, then try again.",
+      );
+  }
+
+  function serverBackupId(result: { backupId?: string }) {
+    if (!result.backupId || typeof result.backupId !== "string")
+      throw new AppError(
+        "validation",
+        "The campaign did not provide a wallet backup version. Your wallet was kept.",
+      );
+    return result.backupId;
+  }
+
+  useEffect(() => {
+    setWalletBackupConflict(false);
+    setWalletBackupError("");
+    setWalletBackupMessage("");
+  }, [selectedCharacterId]);
+
+  useEffect(() => {
+    if (!d1Wallet || !selectedCharacterId || !getSessionToken()) return;
+    if (walletLoadedCharacterIdRef.current === selectedCharacterId) {
+      setWalletRecovering(false);
+      setWalletRecoveryError("");
+      return;
+    }
+    if (operationRef.current) return;
+    const scope = captureWalletScope();
+    if (scope.characterId !== selectedCharacterId || !scope.current()) return;
+    let cancelled = false;
+    const current = () =>
+      !cancelled &&
+      scope.current() &&
+      walletLoadedCharacterIdRef.current !== scope.characterId &&
+      !operationRef.current;
+    setWalletRecovering(true);
+    setWalletRecoveryError("");
+    void (async () => {
+      try {
+        let wallet: Pick<
+            LocalWalletState,
+            "transactions" | "recurringExpenses"
+          >,
+          backupId: string;
+        try {
+          const result = await loadLocalWalletBackup(scope.characterId);
+          backupId = serverBackupId(result);
+          validateWalletBackup(
+            result.transactions,
+            result.recurringExpenses,
+            scope.characterId,
+          );
+          if (result.characterId !== scope.characterId)
+            throw new AppError(
+              "validation",
+              "The saved wallet belongs to a different character.",
+            );
+          wallet = {
+            transactions: result.transactions as unknown as Transaction[],
+            recurringExpenses:
+              result.recurringExpenses as unknown as SheetRecurringExpense[],
+          };
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "not-found")
+            throw error;
+          if (!current()) return;
+          const result = await loadWalletData(scope.characterId);
+          if (result.characterId !== scope.characterId)
+            throw new AppError(
+              "validation",
+              "The campaign wallet belongs to a different character.",
+            );
+          wallet = {
+            transactions: mapSheetTransactions(result.transactions),
+            recurringExpenses: result.recurringExpenses,
+          };
+          validateWalletBackup(
+            wallet.transactions,
+            wallet.recurringExpenses,
+            scope.characterId,
+          );
+          // If a backup appeared after the 404, the first save will conflict safely.
+          backupId = "";
+        }
+        if (!current()) return;
+        replaceWallet(scope.characterId, wallet, backupId);
+      } catch (error) {
+        if (current())
+          setWalletRecoveryError(
+            error instanceof Error
+              ? error.message
+              : "Could not recover this wallet. Retry or import a wallet file.",
+          );
+      } finally {
+        if (!cancelled && scope.current()) setWalletRecovering(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCharacterId, walletRecoveryRetry, walletBackupBusy]);
 
   function applySystemWalletTransactionLocally(
     transaction: SheetTransaction | null | undefined,
@@ -112,6 +278,7 @@ export function useWallet(
     const activeCharacterId =
       selectedCharacterIdRef.current || selectedCharacter?.characterId || "";
     if (!activeCharacterId) return;
+    if (d1Wallet) requireLoadedWallet(activeCharacterId);
 
     if (recurrence) {
       const schedule: SheetRecurringExpense = {
@@ -170,6 +337,7 @@ export function useWallet(
     const characterId =
       selectedCharacterIdRef.current || selectedCharacter?.characterId || "";
     if (!characterId) return;
+    if (d1Wallet) requireLoadedWallet(characterId);
 
     setPlatinum((current) =>
       Math.max(0, current - (Number(transaction.coins.pp) || 0)),
@@ -199,6 +367,7 @@ export function useWallet(
     const activeCharacterId =
       selectedCharacterIdRef.current || selectedCharacter?.characterId || "";
     if (!activeCharacterId) return;
+    if (d1Wallet) requireLoadedWallet(activeCharacterId);
 
     const currentBalances: CoinBalances = {
       pp: platinum,
@@ -242,71 +411,176 @@ export function useWallet(
   }
 
   async function backUpCurrentWallet() {
-    const { selectedCharacter, selectedCharacterIdRef } = getContext();
-
-    if (!selectedCharacter || walletBackupBusy) return;
-    const characterId = selectedCharacter.characterId;
-
+    const scope = captureWalletScope();
+    if (!scope.characterId || operationRef.current) return;
+    operationRef.current = true;
     setWalletBackupBusy("backup");
     setWalletBackupMessage("");
     setWalletBackupError("");
     try {
+      requireLoadedWallet(scope.characterId);
+      let expectedBackupId = loadLocalWalletState(scope.characterId)?.backupId;
+      if (
+        d1Wallet &&
+        (expectedBackupId === undefined || walletBackupConflict)
+      ) {
+        try {
+          const campaign = await loadLocalWalletBackup(scope.characterId);
+          if (!scope.current()) return;
+          expectedBackupId = serverBackupId(campaign);
+          const same =
+            canonicalJSON({
+              transactions: campaign.transactions,
+              recurringExpenses: campaign.recurringExpenses,
+            }) === canonicalJSON(liveWalletRef.current);
+          if (
+            !same &&
+            !window.confirm(
+              `A campaign backup from ${new Date(campaign.backedUpAt).toLocaleString()} already exists (${campaign.transactions.length} transactions). Replace it with this device's wallet? Export both wallets first if you need to combine their entries.`,
+            )
+          )
+            return;
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "not-found")
+            throw error;
+          const imported = await loadWalletData(scope.characterId);
+          if (!scope.current()) return;
+          const hasImportedData =
+            imported.transactions.length || imported.recurringExpenses.length;
+          const same =
+            canonicalJSON({
+              transactions: mapSheetTransactions(imported.transactions),
+              recurringExpenses: imported.recurringExpenses,
+            }) === canonicalJSON(liveWalletRef.current);
+          if (
+            hasImportedData &&
+            !same &&
+            !window.confirm(
+              "The imported campaign ledger differs from this device's wallet. Save this device's wallet as the campaign backup? Export and compare the ledgers first if you need to combine their entries.",
+            )
+          )
+            return;
+          expectedBackupId = "";
+        }
+        if (!scope.current()) return;
+        saveLocalWalletState(
+          {
+            version: 1,
+            characterId: scope.characterId,
+            ...liveWalletRef.current,
+            balance: walletBalanceFromTransactions(
+              liveWalletRef.current.transactions,
+            ),
+            backupId: expectedBackupId,
+            savedAt: new Date().toISOString(),
+          },
+          true,
+        );
+        setWalletBackupConflict(false);
+      }
+      const wallet = liveWalletRef.current;
+      validateWalletBackup(
+        wallet.transactions,
+        wallet.recurringExpenses,
+        scope.characterId,
+      );
+      const key = canonicalJSON({
+        session: getSessionToken(),
+        characterId: scope.characterId,
+        expectedBackupId,
+        ...wallet,
+      });
+      if (pendingBackupRef.current?.key !== key)
+        pendingBackupRef.current = { key, mutationId: crypto.randomUUID() };
+      const mutationId = pendingBackupRef.current.mutationId;
       const result = await backupLocalWallet({
-        characterId,
-        transactions: transactions as unknown as Array<Record<string, unknown>>,
-        recurringExpenses: recurringExpenses as unknown as Array<
+        characterId: scope.characterId,
+        transactions: wallet.transactions as unknown as Array<
           Record<string, unknown>
         >,
+        recurringExpenses: wallet.recurringExpenses as unknown as Array<
+          Record<string, unknown>
+        >,
+        clientMutationId: mutationId,
+        expectedBackupId,
       });
-      if (selectedCharacterIdRef.current !== characterId) return;
+      if (!scope.current()) return;
+      if (d1Wallet) {
+        const backupId = serverBackupId(result);
+        saveLocalWalletState(
+          {
+            version: 1,
+            characterId: scope.characterId,
+            ...liveWalletRef.current,
+            balance: walletBalanceFromTransactions(
+              liveWalletRef.current.transactions,
+            ),
+            backupId,
+            savedAt: new Date().toISOString(),
+          },
+          true,
+        );
+      }
+      if (pendingBackupRef.current?.mutationId === mutationId)
+        pendingBackupRef.current = null;
+      setWalletBackupConflict(result.isLatest === false);
       const when = result.backedUpAt
         ? new Date(result.backedUpAt).toLocaleString()
         : "just now";
-      setWalletBackupMessage(`Ledger backup saved ${when}.`);
+      const changed =
+        canonicalJSON(liveWalletRef.current) !== canonicalJSON(wallet);
+      setWalletBackupMessage(
+        result.isLatest === false
+          ? "This snapshot was saved, but a newer campaign backup exists."
+          : `Ledger backup saved ${when}.${changed ? " Newer edits on this device still need to be backed up." : ""}`,
+      );
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Could not back up this wallet.";
-      if (selectedCharacterIdRef.current === characterId)
-        setWalletBackupError(message);
+      if (
+        scope.current() &&
+        error instanceof AppError &&
+        error.code === "conflict"
+      )
+        setWalletBackupConflict(true);
+      if (scope.current())
+        setWalletBackupError(
+          error instanceof Error
+            ? error.message
+            : "Could not back up this wallet.",
+        );
       throw error;
     } finally {
+      operationRef.current = false;
       setWalletBackupBusy("");
     }
   }
 
   async function restoreCurrentWalletBackup() {
-    const { selectedCharacter, selectedCharacterIdRef } = getContext();
-
-    if (!selectedCharacter || walletBackupBusy) return;
+    const scope = captureWalletScope();
+    if (!scope.characterId || operationRef.current) return;
     if (
       !window.confirm(
         "Restore this character's wallet backup? This will replace the local ledger and recurring wallet expenses on this device.",
       )
     )
       return;
-
-    const characterId = selectedCharacter.characterId;
-    const generation = getContext().characterLoadRequestRef?.current;
-    const before = JSON.stringify(loadLocalWalletState(characterId));
+    const before = JSON.stringify(loadLocalWalletState(scope.characterId));
+    const beforeLive = canonicalJSON(liveWalletRef.current);
+    operationRef.current = true;
     setWalletBackupBusy("restore");
     setWalletBackupMessage("");
     setWalletBackupError("");
-
     try {
-      const result = await loadLocalWalletBackup(characterId);
+      const result = await loadLocalWalletBackup(scope.characterId);
+      if (!scope.current()) return;
       if (
-        selectedCharacterIdRef.current !== characterId ||
-        getContext().characterLoadRequestRef?.current !== generation
+        JSON.stringify(loadLocalWalletState(scope.characterId)) !== before ||
+        canonicalJSON(liveWalletRef.current) !== beforeLive
       )
-        return;
-      if (JSON.stringify(loadLocalWalletState(characterId)) !== before)
         throw new AppError(
           "conflict",
           "New wallet edits were made while restoring. They are preserved. Review the ledger and confirm restore again if you still want to replace them.",
         );
-      if (result.characterId !== characterId)
+      if (result.characterId !== scope.characterId)
         throw new AppError(
           "validation",
           "The backup belongs to a different character. Your current wallet has been kept.",
@@ -314,58 +588,118 @@ export function useWallet(
       validateWalletBackup(
         result.transactions,
         result.recurringExpenses,
-        characterId,
+        scope.characterId,
       );
-      const restoredTransactions = Array.isArray(result.transactions)
-        ? (result.transactions as unknown as Transaction[])
-        : [];
-      const restoredRecurring = Array.isArray(result.recurringExpenses)
-        ? (result.recurringExpenses as unknown as SheetRecurringExpense[])
-        : [];
-
-      const restoredBalance =
-        walletBalanceFromTransactions(restoredTransactions);
-      const restoredState: LocalWalletState = {
-        version: 1,
-        characterId,
-        balance: restoredBalance,
-        transactions: restoredTransactions,
-        recurringExpenses: restoredRecurring,
-        savedAt: new Date().toISOString(),
-      };
-
-      saveLocalWalletState(restoredState, true);
-      walletLoadedCharacterIdRef.current = characterId;
-      setTransactions(restoredTransactions);
-      setRecurringExpenses(restoredRecurring);
-      setPlatinum(restoredBalance.pp);
-      setGold(restoredBalance.gp);
-      setSilver(restoredBalance.sp);
-      setCopper(restoredBalance.cp);
-
-      if (
-        selectedCharacterIdRef.current !== characterId ||
-        getContext().characterLoadRequestRef?.current !== generation
-      )
-        return;
+      replaceWallet(
+        scope.characterId,
+        {
+          transactions: result.transactions as unknown as Transaction[],
+          recurringExpenses:
+            result.recurringExpenses as unknown as SheetRecurringExpense[],
+        },
+        d1Wallet ? serverBackupId(result) : undefined,
+      );
       const when = result.backedUpAt
         ? new Date(result.backedUpAt).toLocaleString()
         : "the saved backup";
       setWalletBackupMessage(`Wallet restored from ${when}.`);
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Could not restore this wallet backup.";
-      if (selectedCharacterIdRef.current === characterId)
-        setWalletBackupError(message);
+      if (scope.current())
+        setWalletBackupError(
+          error instanceof Error
+            ? error.message
+            : "Could not restore this wallet backup.",
+        );
       throw error;
     } finally {
+      operationRef.current = false;
+      setWalletBackupBusy("");
+    }
+  }
+
+  function exportCurrentWallet() {
+    const { characterId } = captureWalletScope();
+    if (!characterId || operationRef.current) return;
+    setWalletBackupMessage("");
+    setWalletBackupError("");
+    try {
+      requireLoadedWallet(characterId);
+      downloadWalletTransfer({ characterId, ...liveWalletRef.current });
+      setWalletBackupMessage(
+        "Wallet file downloaded. Keep it safe; it contains this character's ledger.",
+      );
+    } catch (error) {
+      setWalletBackupError(
+        error instanceof Error
+          ? error.message
+          : "Could not export this wallet.",
+      );
+    }
+  }
+
+  async function importWalletFile(file: File) {
+    const scope = captureWalletScope();
+    if (!scope.characterId || operationRef.current) return;
+    const before = JSON.stringify(loadLocalWalletState(scope.characterId));
+    const beforeLive = canonicalJSON(liveWalletRef.current);
+    operationRef.current = true;
+    setWalletBackupBusy("import");
+    setWalletBackupMessage("");
+    setWalletBackupError("");
+    try {
+      if (file.size > 10 * 1024 * 1024)
+        throw new AppError(
+          "rejected",
+          "This wallet file is too large. Export this character's wallet separately and try again.",
+        );
+      let input: unknown;
+      const text = await file.text();
+      try {
+        input = JSON.parse(text);
+      } catch {
+        throw new AppError(
+          "rejected",
+          "This file is not valid JSON. Export a fresh wallet file and try again.",
+        );
+      }
+      if (!scope.current()) return;
+      const wallet = readWalletTransfer(input, scope.characterId);
+      if (
+        !window.confirm(
+          "Import this wallet file? This will replace the selected character's local ledger and recurring wallet expenses on this device.",
+        )
+      )
+        return;
+      if (!scope.current()) return;
+      if (
+        JSON.stringify(loadLocalWalletState(scope.characterId)) !== before ||
+        canonicalJSON(liveWalletRef.current) !== beforeLive
+      )
+        throw new AppError(
+          "conflict",
+          "The wallet changed while reading this file. Your edits are preserved. Review the ledger before importing again.",
+        );
+      replaceWallet(scope.characterId, wallet);
+      setWalletBackupMessage(
+        "Wallet file imported on this device. Use Back Up Ledger to save it to the campaign.",
+      );
+    } catch (error) {
+      if (scope.current())
+        setWalletBackupError(
+          error instanceof Error
+            ? error.message
+            : "Could not import this wallet file.",
+        );
+      throw error;
+    } finally {
+      operationRef.current = false;
       setWalletBackupBusy("");
     }
   }
 
   async function cancelSchedule(scheduleId: string) {
+    if (d1Wallet)
+      requireLoadedWallet(getContext().selectedCharacterIdRef.current);
     setRecurringExpenses((items) =>
       items.filter((item) => item.scheduleId !== scheduleId),
     );
@@ -382,6 +716,8 @@ export function useWallet(
       note: string;
     },
   ) {
+    if (d1Wallet)
+      requireLoadedWallet(getContext().selectedCharacterIdRef.current);
     const amounts: CoinBalances = { pp: 0, gp: 0, sp: 0, cp: 0 };
     amounts[input.coin] = input.amount;
     setRecurringExpenses((items) =>
@@ -423,6 +759,7 @@ export function useWallet(
       balance: canonicalBalance,
       transactions,
       recurringExpenses,
+      backupId: loadLocalWalletState(selectedCharacterId)?.backupId,
       savedAt: new Date().toISOString(),
     });
   }, [
@@ -520,6 +857,8 @@ export function useWallet(
     recordTransaction,
     deleteWalletTransaction,
     recordPurchase,
+    exportCurrentWallet,
+    importWalletFile,
     backUpCurrentWallet,
     restoreCurrentWalletBackup,
     cancelSchedule,
@@ -537,6 +876,10 @@ export function useWallet(
     recurringExpenses,
     setRecurringExpenses,
     walletLoadedCharacterIdRef,
+    walletRecovering,
+    walletRecoveryError,
+    walletBackupConflict,
+    retryWalletRecovery: () => setWalletRecoveryRetry((value) => value + 1),
     walletBackupBusy,
     setWalletBackupBusy,
     walletBackupMessage,

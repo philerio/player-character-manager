@@ -205,7 +205,7 @@ function applyPendingWalletMutationsToWallet(
   };
 }
 
-function mapSheetTransactions(
+export function mapSheetTransactions(
   sheetTransactions: SheetTransaction[],
 ): Transaction[] {
   return sheetTransactions.map((transaction) => {
@@ -234,6 +234,8 @@ export type LocalWalletState = {
   transactions: Transaction[];
   recurringExpenses: SheetRecurringExpense[];
   savedAt: string;
+  /** Last accepted campaign snapshot; empty means confirmed no backup, absent means unlinked. */
+  backupId?: string;
 };
 
 export function walletBalanceFromTransactions(
@@ -280,6 +282,8 @@ export function loadLocalWalletState(
         ? (parsed.recurringExpenses as SheetRecurringExpense[])
         : [],
       savedAt: String(parsed.savedAt || ""),
+      backupId:
+        typeof parsed.backupId === "string" ? parsed.backupId : undefined,
     };
   } catch {
     return null;
@@ -296,7 +300,10 @@ export function saveLocalWalletState(
       ...state,
       balance: walletBalanceFromTransactions(state.transactions),
     };
-    appStorage.setItem(
+    const save = requireDurableSave
+      ? appStorage.setItemDurably
+      : appStorage.setItem;
+    save(
       localWalletStorageKey(state.characterId),
       JSON.stringify(canonicalState),
     );

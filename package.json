@@ -11,8 +11,15 @@
     "test:watch": "vitest",
     "dev:demo": "vite --mode demo",
     "typecheck": "tsc -b && tsc --noEmit -p tsconfig.tests.json",
-    "format": "prettier --write src/app src/App.tsx src/components/AppShell.tsx src/google-sheets-api.ts tests vitest.config.ts README.md package.json tsconfig.tests.json",
-    "format:check": "prettier --check src/app src/App.tsx src/components/AppShell.tsx src/google-sheets-api.ts tests vitest.config.ts README.md package.json tsconfig.tests.json"
+    "format": "prettier --write src/app src/App.tsx src/components/AppShell.tsx src/google-sheets-api.ts tests vitest.config.ts README.md package.json tsconfig.tests.json worker scripts docs wrangler.jsonc vitest.worker.config.ts shared",
+    "format:check": "prettier --check src/app src/App.tsx src/components/AppShell.tsx src/google-sheets-api.ts tests vitest.config.ts README.md package.json tsconfig.tests.json worker scripts docs wrangler.jsonc vitest.worker.config.ts shared",
+    "dev:d1": "vite --mode d1",
+    "d1:dev": "wrangler dev",
+    "d1:migrate:local": "wrangler d1 migrations apply DB --local",
+    "d1:import": "node scripts/import-workbook.mjs",
+    "d1:typecheck": "tsc --noEmit -p worker/tsconfig.json && tsc --noEmit -p worker/tsconfig.tests.json",
+    "d1:test": "vitest run --config vitest.worker.config.ts --pool=threads --maxWorkers=1",
+    "d1:seed:local": "node scripts/seed-d1.mjs && wrangler d1 execute DB --local --file migration-output/local-seed.sql"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -21,7 +28,9 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261014.1",
     "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.19.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.2",
@@ -29,7 +38,8 @@
     "prettier": "^3.9.10",
     "typescript": "^5.9.3",
     "vite": "^8.0.13",
-    "vitest": "^5.0.4"
+    "vitest": "^5.0.4",
+    "wrangler": "^4.151.0"
   },
   "engines": {
     "node": ">=24"

@@ -1,5 +1,5 @@
 import { LockKeyhole, Trash2, UserRound, X } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { type SheetCharacter, type LoginOption } from "../google-sheets-api";
 import { CHARACTER_CLASSES, canonicalCharacterClass } from "../app/core";
 
@@ -291,11 +291,12 @@ export function EditCharacterModal({
 }: {
   character: SheetCharacter;
   onClose: () => void;
-  onSave: (input: { name: string; className: string; level: number }) => Promise<void>;
+  onSave: (input: { characterId?: string; expectedVersion?: number; name: string; className: string; level: number }) => Promise<void>;
   onDelete: () => void;
   onPortraitUpload: (file: File) => Promise<void>;
   onPortraitDelete: () => Promise<void>;
 }) {
+  const initialCharacter = useRef(character).current;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [uploadingPortrait, setUploadingPortrait] = useState(false);
@@ -308,6 +309,8 @@ export function EditCharacterModal({
     setError("");
     try {
       await onSave({
+        characterId: initialCharacter.characterId,
+        expectedVersion: initialCharacter.version,
         name: String(data.get("name") || "").trim(),
         className: String(data.get("className") || "").trim(),
         level: Math.max(1, Number(data.get("level")) || 1),
@@ -389,18 +392,18 @@ export function EditCharacterModal({
           </div>
           <label>
             Character name
-            <input name="name" defaultValue={character.name} autoFocus required maxLength={120} />
+            <input name="name" defaultValue={initialCharacter.name} autoFocus required maxLength={120} />
           </label>
           <div className="character-fields">
             <label>
               Class
-              <select name="className" defaultValue={canonicalCharacterClass(character.class)} required>
+              <select name="className" defaultValue={canonicalCharacterClass(initialCharacter.class)} required>
                 {CHARACTER_CLASSES.map((className) => <option value={className} key={className}>{className}</option>)}
               </select>
             </label>
             <label>
               Level
-              <input name="level" type="number" min="1" max="99" defaultValue={character.level} required />
+              <input name="level" type="number" min="1" max="99" defaultValue={initialCharacter.level} required />
             </label>
           </div>
           {error && <p className="form-error" role="alert">{error}</p>}
@@ -431,12 +434,13 @@ export function DeleteCharacterModal({
 }: {
   character: SheetCharacter;
   onClose: () => void;
-  onDelete: () => Promise<void>;
+  onDelete: (input?: {characterId: string; expectedVersion?: number}) => Promise<void>;
 }) {
+  const initialCharacter = useRef(character).current;
   const [confirmation, setConfirmation] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
-  const matches = confirmation.trim() === character.name;
+  const matches = confirmation.trim() === initialCharacter.name;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -444,7 +448,7 @@ export function DeleteCharacterModal({
     setDeleting(true);
     setError("");
     try {
-      await onDelete();
+      await onDelete({characterId: initialCharacter.characterId, expectedVersion: initialCharacter.version});
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not delete the character.");
       setDeleting(false);
@@ -464,14 +468,14 @@ export function DeleteCharacterModal({
           <X />
         </button>
         <p className="eyebrow">Permanent deletion</p>
-        <h2 id="delete-character-title">Delete {character.name}?</h2>
+        <h2 id="delete-character-title">Delete {initialCharacter.name}?</h2>
         <p className="modal-intro">
           This permanently removes the character and all of their wallet transactions,
           territories, retainers, and journal entries.
         </p>
         <form onSubmit={submit}>
           <label>
-            Type <strong>{character.name}</strong> to confirm
+            Type <strong>{initialCharacter.name}</strong> to confirm
             <input
               value={confirmation}
               onChange={(event) => setConfirmation(event.target.value)}

@@ -325,3 +325,57 @@ it("accepts unset reveal cells from Apps Script without revealing imported hexes
     isDiscovered: false,
   });
 });
+it("receives published maps without discarding pending territory edits", () => {
+  const local = {
+    ...fixture.territories[0],
+    mapUrl: undefined,
+    population: 123,
+    payChurchTithe: false,
+  };
+  const draft: TerritoryLocalDraft = {
+    characterId: fixture.selectedCharacterId,
+    territories: [local],
+    territoryHexes: [],
+    scoutingMissions: [],
+    customMissions: [],
+    updatedAt: "local",
+    operations: [
+      {
+        id: "keep-edit",
+        kind: "tithe",
+        territoryId: local.territoryId,
+        payChurchTithe: false,
+      },
+    ],
+  };
+  const published = {
+    ...fixture.territories[0],
+    mapUrl: "/demo-territory-player.svg",
+    poiMapUrl: "/demo-territory-details.svg",
+    population: 999,
+    payChurchTithe: true,
+  };
+  const merged = mergePublishedTerritoryReveals(draft, [], [published]);
+  expect(merged.territories[0]).toMatchObject({
+    mapUrl: published.mapUrl,
+    poiMapUrl: published.poiMapUrl,
+    population: 123,
+    payChurchTithe: false,
+  });
+  expect(merged.operations).toEqual(draft.operations);
+  const assigned = {
+    ...draft,
+    territories: [{ ...local, mapUrl: "/my-new-map.svg" }],
+  };
+  expect(
+    mergePublishedTerritoryReveals(assigned, [], [published]).territories[0]
+      .mapUrl,
+  ).toBe("/my-new-map.svg");
+  expect(
+    mergePublishedTerritoryReveals(
+      draft,
+      [],
+      [{ ...published, characterId: "other" }],
+    ).territories,
+  ).toEqual(draft.territories);
+});

@@ -1,3 +1,8 @@
+import {
+  RecordFieldError,
+  validateRecordFields,
+  validateWalletBackupFields,
+} from "../../shared/records.mjs";
 import { AppError, type DataIssue } from "./errors";
 import { territoryHexKey } from "./territoryRules";
 let recordContext: Partial<DataIssue> = {};
@@ -83,114 +88,21 @@ function rows(
           "the requested character ID",
           row.characterId,
         );
-      if (
-        ["characters", "players", "retainers", "territories"].includes(name)
-      ) {
-        const field = name === "players" ? "displayName" : "name";
-        text(row[field], `${rowPath}.${field}`);
-      }
-      if (name !== "characters" && name !== "players")
-        text(row.characterId, `${rowPath}.characterId`);
-      if (name === "players") {
-        oneOf(row.role, ["dm", "player"], `${rowPath}.role`);
-        for (const field of [
-          "active",
-          "territoriesEnabled",
-          "retainersEnabled",
-        ])
-          boolean(row[field], `${rowPath}.${field}`);
-      }
-      if (name === "characters") {
-        text(row.playerId, `${rowPath}.playerId`);
-        text(row.class, `${rowPath}.class`);
-        number(row.level, `${rowPath}.level`);
-      }
-      if (name === "retainers") {
-        oneOf(row.type, ["force", "individual"], `${rowPath}.type`);
-        number(row.wageGp, `${rowPath}.wageGp`);
-        string(row.role, `${rowPath}.role`);
-        oneOf(row.costCoin, ["pp", "gp", "sp", "cp"], `${rowPath}.costCoin`);
-        oneOf(
-          row.wageFrequency,
-          ["weekly", "monthly", "annually"],
-          `${rowPath}.wageFrequency`,
+      try {
+        validateRecordFields(name, row, rowPath);
+      } catch (error) {
+        if (!(error instanceof RecordFieldError)) throw error;
+        throw new AppError(
+          "validation",
+          "The campaign returned incomplete or invalid data. The existing working copy was kept. Retry or contact the DM.",
+          false,
+          {
+            ...recordContext,
+            path: error.path,
+            expected: error.expected,
+            received: error.received,
+          },
         );
-        text(row.createdAt, `${rowPath}.createdAt`);
-      }
-      if (name === "transactions" || name === "recurringExpenses")
-        for (const coin of ["pp", "gp", "sp", "cp"])
-          number(row[coin], `${rowPath}.${coin}`);
-      if (name === "transactions") {
-        oneOf(row.type, ["income", "expense"], `${rowPath}.type`);
-        text(row.label, `${rowPath}.label`);
-        text(row.timestamp, `${rowPath}.timestamp`);
-      }
-      if (name === "recurringExpenses") {
-        text(row.label, `${rowPath}.label`);
-        text(row.startDate, `${rowPath}.startDate`);
-        count(row.occurrenceCount, `${rowPath}.occurrenceCount`);
-        boolean(row.active, `${rowPath}.active`);
-        oneOf(
-          row.frequency,
-          ["weekly", "monthly", "annually"],
-          `${rowPath}.frequency`,
-        );
-      }
-      if (name === "territories") {
-        boolean(row.active, `${rowPath}.active`);
-        text(row.createdAt, `${rowPath}.createdAt`);
-      }
-      if (
-        ["territoryHexes", "scoutingMissions", "customMissions"].includes(name)
-      )
-        text(row.territoryId, `${rowPath}.territoryId`);
-      if (name === "territoryHexes") {
-        text(row.hexNumber, `${rowPath}.hexNumber`);
-        number(row.mapX, `${rowPath}.mapX`);
-        number(row.mapY, `${rowPath}.mapY`);
-        text(row.createdAt, `${rowPath}.createdAt`);
-        for (const key of ["dmRevealed", "isDiscovered"])
-          if (row[key] !== undefined) boolean(row[key], `${rowPath}.${key}`);
-      }
-      if (["scoutingMissions", "customMissions"].includes(name)) {
-        if (!Array.isArray(row.allocations))
-          invalid(`${rowPath}.allocations`, "an array", row.allocations);
-        for (const [allocationIndex, allocation] of row.allocations.entries()) {
-          const allocationPath = `${rowPath}.allocations[${allocationIndex}]`;
-          const item = object(allocation, allocationPath);
-          text(item.retainerId, `${allocationPath}.retainerId`);
-          text(item.soldierType, `${allocationPath}.soldierType`);
-          count(item.men, `${allocationPath}.men`);
-        }
-        count(row.men, `${rowPath}.men`);
-        if (name === "scoutingMissions") {
-          text(row.hexNumber, `${rowPath}.hexNumber`);
-          number(row.mapX, `${rowPath}.mapX`);
-          number(row.mapY, `${rowPath}.mapY`);
-          oneOf(
-            row.status,
-            ["active", "completed", "failed", "cancelled"],
-            `${rowPath}.status`,
-          );
-        } else {
-          text(row.objective, `${rowPath}.objective`);
-          text(row.missionLocation, `${rowPath}.missionLocation`);
-          text(row.startDate, `${rowPath}.startDate`);
-          number(row.durationDays, `${rowPath}.durationDays`);
-          oneOf(
-            row.status,
-            ["scheduled", "active", "completed", "cancelled"],
-            `${rowPath}.status`,
-          );
-        }
-      }
-      if (name === "journal") {
-        text(row.title, `${rowPath}.title`);
-        string(row.notes, `${rowPath}.notes`);
-        string(row.category, `${rowPath}.category`);
-        text(row.playerId, `${rowPath}.playerId`);
-        text(row.createdAt, `${rowPath}.createdAt`);
-        text(row.updatedAt, `${rowPath}.updatedAt`);
       }
     } finally {
       recordContext = previous;
@@ -478,6 +390,7 @@ function validateActionResult(
           );
         for (const field of ["mapX", "mapY"]) {
           if (
+            request.revealOnly !== true &&
             request[field] !== undefined &&
             (typeof request[field] !== "number" ||
               Math.abs(record[field] - (request[field] as number)) > 0.000001)
@@ -541,6 +454,8 @@ function validateActionResult(
     text(data.characterId, "characterId");
     match(data.characterId, characterId, "characterId");
     text(data.backedUpAt, "backedUpAt");
+    if (data.backupId !== undefined) text(data.backupId, "backupId");
+    if (data.isLatest !== undefined) boolean(data.isLatest, "isLatest");
     if (action.endsWith("load"))
       validateWalletBackup(
         data.transactions,
@@ -635,40 +550,22 @@ export function validateWalletBackup(
   schedules: unknown,
   characterId: string,
 ) {
-  if (!Array.isArray(transactions))
-    invalid("transactions", "an array", transactions);
-  if (!Array.isArray(schedules))
-    invalid("recurringExpenses", "an array", schedules);
-  const seen = new Set<string>();
-  for (const [index, value] of transactions.entries()) {
-    const rowPath = `transactions[${index}]`;
-    const previous = recordContext;
-    recordContext = { collection: "transactions", recordIndex: index + 1 };
-    try {
-      const row = object(value, rowPath);
-      number(row.id, rowPath + ".id");
-      if (row.characterId !== undefined && row.characterId !== characterId)
-        invalid(
-          `${rowPath}.characterId`,
-          "the requested character ID",
-          row.characterId,
-        );
-      const id = row.transactionId ?? String(row.id);
-      text(id, `${rowPath}.transactionId`);
-      recordContext.recordId = id;
-      if (seen.has(id))
-        invalid(`${rowPath}.transactionId`, "a unique transaction ID", id);
-      seen.add(id);
-      oneOf(row.kind, ["income", "expense"], `${rowPath}.kind`);
-      text(row.label, rowPath + ".label");
-      for (const coin of ["pp", "gp", "sp", "cp"])
-        number(
-          object(row.coins, rowPath + ".coins")[coin],
-          rowPath + ".coins" + "." + coin,
-        );
-    } finally {
-      recordContext = previous;
-    }
+  try {
+    validateWalletBackupFields(transactions, schedules, characterId);
+  } catch (error) {
+    if (!(error instanceof RecordFieldError)) throw error;
+    throw new AppError(
+      "validation",
+      "The campaign returned incomplete or invalid data. The existing working copy was kept. Retry or contact the DM.",
+      false,
+      {
+        path: error.path,
+        expected: error.expected,
+        received: error.received,
+        collection: error.collection,
+        recordIndex: error.recordIndex,
+        recordId: error.recordId,
+      },
+    );
   }
-  rows({ recurringExpenses: schedules }, "recurringExpenses", characterId);
 }

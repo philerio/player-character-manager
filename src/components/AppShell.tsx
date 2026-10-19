@@ -140,9 +140,16 @@ export function AppShell({
     copper,
     coinWeight,
     transactions,
+    walletRecovering,
+    walletRecoveryError,
+    walletBackupConflict,
+    retryWalletRecovery,
     walletBackupBusy,
     walletBackupMessage,
     walletBackupError,
+    walletReady,
+    exportCurrentWallet,
+    importWalletFile,
     backUpCurrentWallet,
     restoreCurrentWalletBackup,
     territories,
@@ -666,13 +673,24 @@ export function AppShell({
               onSeeFullLedger={() => setModal("ledger")}
               onManageRecurringExpenses={() => setModal("recurring-expenses")}
               backupEnabled={Boolean(
-                selectedCharacter && hasSheetsConnection(),
+                selectedCharacter && hasSheetsConnection() && walletReady,
               )}
               backupBusy={walletBackupBusy}
               backupMessage={walletBackupMessage}
               backupError={walletBackupError}
               onBackup={backUpCurrentWallet}
               onRestore={restoreCurrentWalletBackup}
+              walletReady={walletReady}
+              walletRecovering={walletRecovering}
+              walletRecoveryError={walletRecoveryError}
+              backupConflict={walletBackupConflict}
+              onRetryWallet={retryWalletRecovery}
+              restoreEnabled={Boolean(
+                selectedCharacter && hasSheetsConnection(),
+              )}
+              transferEnabled={Boolean(selectedCharacter)}
+              onExport={exportCurrentWallet}
+              onImport={importWalletFile}
             />
           )}
           {section === "territories" && (
@@ -860,6 +878,7 @@ export function AppShell({
         ) : modal === "edit-character" ? (
           selectedCharacter ? (
             <EditCharacterModal
+              key={selectedCharacter.characterId}
               character={selectedCharacter}
               onClose={() => setModal(null)}
               onSave={updateCharacter}
@@ -871,6 +890,7 @@ export function AppShell({
         ) : modal === "delete-character" ? (
           selectedCharacter ? (
             <DeleteCharacterModal
+              key={selectedCharacter.characterId}
               character={selectedCharacter}
               onClose={() => setModal(null)}
               onDelete={deleteCharacter}

@@ -1,11 +1,13 @@
+import { AppError } from "./app/errors";
 import { clearDataIssues, diagnosticsScope } from "./app/dataDiagnostics";
 import { normalizeSheetResponse, validateResponse } from "./app/validation";
 import { requestCampaign, cancelAllReads } from "./app/transport";
-import { isDemoMode } from "./app/runtime";
+import { apiBackend, apiUrl, isDemoMode } from "./app/runtime";
 import { demoRequest, getDemoBootstrap } from "./app/demoApi";
 import { appStorage } from "./app/storage";
 export type SheetCharacter = {
   characterId: string;
+  version?: number;
   playerId: string;
   name: string;
   class: string;
@@ -363,13 +365,14 @@ export type RegistrationResult = {
   passwordChangeToken: string;
 };
 
-const SCRIPT_URL = isDemoMode
-  ? "https://demo.invalid/sheets"
-  : import.meta.env.VITE_APPS_SCRIPT_URL?.trim() || "";
+const SCRIPT_URL = isDemoMode ? "https://demo.invalid/sheets" : apiUrl;
 function requestSheet(url: string, options?: RequestInit) {
   return requestCampaign(url, options, isDemoMode ? demoRequest : fetch);
 }
-const ACCESS_KEY = import.meta.env.VITE_PCM_ACCESS_KEY?.trim() || "";
+const ACCESS_KEY =
+  apiBackend === "sheets"
+    ? import.meta.env.VITE_PCM_ACCESS_KEY?.trim() || ""
+    : "";
 const SESSION_KEY = "pcm-session-token";
 const BOOTSTRAP_CACHE_PREFIX = "pcm-bootstrap-cache:v1:";
 const BOOTSTRAP_CACHE_LATEST_PREFIX = "pcm-bootstrap-cache-latest:v1:";
@@ -604,7 +607,7 @@ export async function loadTerritoryStatus(
   characterId: string,
   fresh = false,
 ): Promise<SheetTerritoryStatus> {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
   const url = new URL(SCRIPT_URL);
@@ -621,7 +624,7 @@ export async function loadTerritoryStatus(
     cache: "no-store",
   });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = (await response.json()) as SheetTerritoryStatus;
   if (!data.ok)
     throw new Error(data.error || "Could not refresh territory status.");
@@ -633,7 +636,7 @@ export async function loadJournalData(characterId: string): Promise<{
   characterId: string;
   journal: SheetJournalEntry[];
 }> {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
   const url = new URL(SCRIPT_URL);
@@ -650,9 +653,7 @@ export async function loadJournalData(characterId: string): Promise<{
   });
   const data = await response.json();
   if (!response.ok || !data?.ok) {
-    throw new Error(
-      data?.error || `Google Sheets returned ${response.status}.`,
-    );
+    throw new Error(data?.error || `Campaign API returned ${response.status}.`);
   }
   return data;
 }
@@ -662,7 +663,7 @@ export async function loadRetainerData(characterId: string): Promise<{
   characterId: string;
   retainers: SheetRetainer[];
 }> {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
   const url = new URL(SCRIPT_URL);
@@ -687,7 +688,7 @@ export async function loadRetainerData(characterId: string): Promise<{
 export async function loadWalletData(
   characterId: string,
 ): Promise<SheetWalletData> {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
   const url = new URL(SCRIPT_URL);
@@ -702,7 +703,7 @@ export async function loadWalletData(
     cache: "no-store",
   });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = (await response.json()) as SheetWalletData;
   if (!data.ok) throw new Error(data.error || "Could not load wallet data.");
   return data;
@@ -711,7 +712,7 @@ export async function loadWalletData(
 export async function loadTabSyncRevisions(
   characterId: string,
 ): Promise<SheetTabSyncRevisions> {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   if (!characterId) throw new Error("Select a character first.");
 
   const url = new URL(SCRIPT_URL);
@@ -726,7 +727,7 @@ export async function loadTabSyncRevisions(
     cache: "no-store",
   });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = await response.json();
   if (!data.ok)
     throw new Error(data.error || "Could not load tab sync revisions.");
@@ -736,7 +737,7 @@ export async function loadTabSyncRevisions(
 export async function loadSheetData(
   characterId?: string,
 ): Promise<SheetBootstrap> {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
 
   const requestSession = getSessionToken();
   const url = new URL(SCRIPT_URL);
@@ -753,7 +754,7 @@ export async function loadSheetData(
     cache: "no-store",
   });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = (await response.json()) as SheetBootstrap;
   if (!data.ok)
     throw new Error(data.error || "Could not load Google Sheets data.");
@@ -765,7 +766,7 @@ async function postSheetAction<T>(
   action: string,
   payload: Record<string, unknown>,
 ) {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   const response = await requestSheet(SCRIPT_URL, {
     method: "POST",
     redirect: "follow",
@@ -778,7 +779,7 @@ async function postSheetAction<T>(
     }),
   });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = await response.json();
   if (!data.ok)
     throw new Error(data.error || "Could not update Google Sheets.");
@@ -786,7 +787,7 @@ async function postSheetAction<T>(
 }
 
 export async function loadAccountRoster() {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   const requestSession = getSessionToken();
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "account-roster");
@@ -798,7 +799,7 @@ export async function loadAccountRoster() {
     cache: "no-store",
   });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = await response.json();
   if (!data.ok)
     throw new Error(data.error || "Could not load the account roster.");
@@ -818,14 +819,14 @@ export async function loadAccountRoster() {
 }
 
 export async function loadPlayerRoster() {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "player-roster");
   url.searchParams.set("sessionToken", getSessionToken());
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
   const response = await requestSheet(url.toString(), { redirect: "follow" });
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = await response.json();
   if (!data.ok) throw new Error(data.error || "Could not refresh players.");
   return data as {
@@ -837,7 +838,7 @@ export async function loadPlayerRoster() {
 }
 
 export async function loadLoginOptions() {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
+  if (!SCRIPT_URL) throw new Error("Campaign API URL is not configured.");
   const url = new URL(SCRIPT_URL);
   url.searchParams.set("action", "auth.options");
   if (ACCESS_KEY) url.searchParams.set("accessKey", ACCESS_KEY);
@@ -1023,7 +1024,7 @@ export async function saveSheetTransaction(input: {
   });
 
   if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
+    throw new Error(`Campaign API returned ${response.status}.`);
   const data = await response.json();
   if (!data.ok)
     throw new Error(data.error || "Could not save the transaction.");
@@ -1032,6 +1033,8 @@ export async function saveSheetTransaction(input: {
 
 export async function backupLocalWallet(input: {
   characterId: string;
+  clientMutationId?: string;
+  expectedBackupId?: string;
   transactions: Array<Record<string, unknown>>;
   recurringExpenses: Array<Record<string, unknown>>;
 }) {
@@ -1039,9 +1042,14 @@ export async function backupLocalWallet(input: {
     ok: true;
     characterId: string;
     backedUpAt: string;
+    backupId?: string;
+    isLatest?: boolean;
     transactionCount: number;
     recurringExpenseCount: number;
-  }>("wallet.backup.save", input);
+  }>("wallet.backup.save", {
+    ...input,
+    clientMutationId: input.clientMutationId || crypto.randomUUID(),
+  });
 }
 
 export async function loadLocalWalletBackup(characterId: string) {
@@ -1049,6 +1057,7 @@ export async function loadLocalWalletBackup(characterId: string) {
     ok: true;
     characterId: string;
     backedUpAt: string;
+    backupId?: string;
     transactions: Array<Record<string, unknown>>;
     recurringExpenses: Array<Record<string, unknown>>;
   }>("wallet.backup.load", { characterId });
@@ -1412,6 +1421,8 @@ export async function upsertTerritoryHex(input: {
   title?: string;
   contents?: string;
   dmRevealed?: boolean;
+  revealOnly?: boolean;
+  expectedUpdatedAt?: string;
 }) {
   return postSheetAction<{ ok: true; hex: SheetTerritoryHex }>(
     "territory.hex.upsert",
@@ -1540,31 +1551,47 @@ export async function saveSheetCharacter(input: {
   name: string;
   className: string;
   level: number;
+  clientMutationId?: string;
 }) {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
-
-  const response = await requestSheet(SCRIPT_URL, {
-    method: "POST",
-    redirect: "follow",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "character.create",
-      accessKey: ACCESS_KEY,
-      sessionToken: getSessionToken(),
-      playerName: input.playerName,
-      targetPlayerId: input.targetPlayerId || "",
-      name: input.name,
-      class: input.className,
-      level: input.level,
-    }),
-  });
-
-  if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
-  const data = await response.json();
-  if (!data.ok)
-    throw new Error(data.error || "Could not create the character.");
-  return data.character as SheetCharacter;
+  const payload = {
+    playerName: input.playerName,
+    targetPlayerId: input.targetPlayerId || "",
+    name: input.name,
+    class: input.className,
+    level: input.level,
+  };
+  const key = `pcm-character-create:v1:${getDraftScope()}`;
+  const fingerprint = JSON.stringify(payload);
+  let mutationId = input.clientMutationId;
+  if (apiBackend === "d1" && !isDemoMode && !mutationId) {
+    let pending: { fingerprint: string; mutationId: string } | undefined;
+    try {
+      pending = JSON.parse(appStorage.getItem(key) || "null");
+    } catch {
+      /* Replace an unreadable retry record before sending. */
+    }
+    mutationId =
+      pending?.fingerprint === fingerprint &&
+      typeof pending.mutationId === "string"
+        ? pending.mutationId
+        : crypto.randomUUID();
+    appStorage.setItem(key, JSON.stringify({ fingerprint, mutationId }));
+  }
+  const data = await postSheetAction<{ ok: true; character: SheetCharacter }>(
+    "character.create",
+    { ...payload, clientMutationId: mutationId },
+  );
+  if (apiBackend === "d1" && !isDemoMode && mutationId) {
+    try {
+      if (
+        JSON.parse(appStorage.getItem(key) || "null")?.mutationId === mutationId
+      )
+        appStorage.removeItem(key);
+    } catch {
+      /* A confirmed request remains safe to retry with its original ID. */
+    }
+  }
+  return data.character;
 }
 
 export async function updateSheetCharacter(input: {
@@ -1572,53 +1599,47 @@ export async function updateSheetCharacter(input: {
   name: string;
   className: string;
   level: number;
+  expectedVersion?: number;
 }) {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
-
-  const response = await requestSheet(SCRIPT_URL, {
-    method: "POST",
-    redirect: "follow",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "character.update",
-      accessKey: ACCESS_KEY,
-      sessionToken: getSessionToken(),
+  if (
+    apiBackend === "d1" &&
+    !isDemoMode &&
+    !Number.isSafeInteger(input.expectedVersion)
+  )
+    throw new AppError(
+      "rejected",
+      "Refresh the character roster before saving these changes.",
+    );
+  const result = await postSheetAction<{ ok: true; character: SheetCharacter }>(
+    "character.update",
+    {
       characterId: input.characterId,
       name: input.name,
       class: input.className,
       level: input.level,
-    }),
-  });
-
-  if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
-  const data = await response.json();
-  if (!data.ok)
-    throw new Error(data.error || "Could not update the character.");
-  return data.character as SheetCharacter;
+      expectedVersion: input.expectedVersion,
+    },
+  );
+  return result.character;
 }
 
-export async function deleteSheetCharacter(characterId: string) {
-  if (!SCRIPT_URL) throw new Error("Google Sheets URL is not configured.");
-
-  const response = await requestSheet(SCRIPT_URL, {
-    method: "POST",
-    redirect: "follow",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "character.delete",
-      accessKey: ACCESS_KEY,
-      sessionToken: getSessionToken(),
-      characterId,
-    }),
-  });
-
-  if (!response.ok)
-    throw new Error(`Google Sheets returned ${response.status}.`);
-  const data = await response.json();
-  if (!data.ok)
-    throw new Error(data.error || "Could not delete the character.");
-  return data as { ok: true; deletedCharacterId: string };
+export async function deleteSheetCharacter(
+  characterId: string,
+  expectedVersion?: number,
+) {
+  if (
+    apiBackend === "d1" &&
+    !isDemoMode &&
+    !Number.isSafeInteger(expectedVersion)
+  )
+    throw new AppError(
+      "rejected",
+      "Refresh the character roster before deleting this character.",
+    );
+  return postSheetAction<{ ok: true; deletedCharacterId: string }>(
+    "character.delete",
+    { characterId, expectedVersion },
+  );
 }
 
 export async function saveJournalEntry(input: {

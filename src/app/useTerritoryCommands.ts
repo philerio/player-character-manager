@@ -11,6 +11,7 @@ import {
 } from "../google-sheets-api";
 import {
   localMissionStamp,
+  loadTerritoryDraft,
   upsertLocalScoutingTimer,
 } from "./territoryStorage";
 import { loadRetainerDraft } from "./retainerStorage";
@@ -228,8 +229,7 @@ export function useTerritoryCommands(controller: CommandContext) {
         hexNumber: input.hexNumber,
         mapX: input.mapX,
         mapY: input.mapY,
-        title: existing?.title,
-        contents: existing?.contents,
+        revealOnly: true,
         dmRevealed: true,
       },
       { territoryHexes: nextHexes },
@@ -539,6 +539,22 @@ export function useTerritoryCommands(controller: CommandContext) {
         mapY: input.mapY,
         title: input.title,
         contents: input.contents,
+        expectedUpdatedAt:
+          loadTerritoryDraft(selectedCharacter.characterId)
+            ?.operations.filter(
+              (row): row is Extract<typeof row, { kind: "hex" }> =>
+                row.kind === "hex",
+            )
+            .find(
+              (row) =>
+                row.territoryId === input.territoryId &&
+                territoryHexKey(row.hexNumber) ===
+                  territoryHexKey(input.hexNumber) &&
+                row.expectedUpdatedAt !== undefined,
+            )?.expectedUpdatedAt ??
+          (existing && !existing.hexId.startsWith("local-")
+            ? existing.updatedAt || existing.createdAt
+            : ""),
       },
       { territoryHexes: nextHexes },
     );

@@ -295,12 +295,14 @@ export function useBackgroundSync(
                       const merged = mergePublishedTerritoryReveals(
                         latest,
                         remote.territoryHexes,
+                        remote.territories,
                       );
                       if (JSON.stringify(merged) !== JSON.stringify(latest))
                         saveTerritoryDraft(merged);
                       contextRef
                         .current()
                         .setTerritoryHexes(merged.territoryHexes);
+                      contextRef.current().setTerritories(merged.territories);
                     }
                   } catch (reason) {
                     if (reason instanceof AppError && reason.code === "session")

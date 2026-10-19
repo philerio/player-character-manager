@@ -1,5 +1,5 @@
 import { AppError } from "./errors";
-import { demoRole, isDemoMode } from "./runtime";
+import { apiBackend, apiUrl, demoRole, isDemoMode } from "./runtime";
 
 const rescue = new Map<string, string>();
 let failure = false;
@@ -17,10 +17,29 @@ function announce() {
     window.dispatchEvent(new Event("pcm-storage-status"));
 }
 
-const prefix = isDemoMode ? `pcm-demo:${demoRole}:` : "";
+const prefix = isDemoMode
+  ? `pcm-demo:${demoRole}:`
+  : apiBackend === "d1"
+    ? `pcm-d1:${encodeURIComponent(apiUrl)}:`
+    : "";
 
 /** Each view keeps its own drafts/cache; the demo campaign acts as their shared server. */
-function scopedStorage(scope: string): Storage {
+function scopedStorage(
+  scope: string,
+): Storage & { setItemDurably(key: string, value: string): void } {
+  function write(key: string, value: string, preserveInMemory: boolean) {
+    try {
+      window.localStorage.setItem(scope + key, value);
+      rescue.delete(scope + key);
+    } catch {
+      if (preserveInMemory) rescue.set(scope + key, value);
+      noteFailure();
+      throw new AppError(
+        "storage",
+        "Could not save on this device. Keep this tab open and download a backup before leaving.",
+      );
+    }
+  }
   return {
     get length() {
       return keys(scope).length;
@@ -39,17 +58,11 @@ function scopedStorage(scope: string): Storage {
       }
     },
     setItem(key, value) {
-      try {
-        window.localStorage.setItem(scope + key, value);
-        rescue.delete(scope + key);
-      } catch {
-        rescue.set(scope + key, value);
-        noteFailure();
-        throw new AppError(
-          "storage",
-          "Could not save on this device. Keep this tab open and download a backup before leaving.",
-        );
-      }
+      write(key, value, true);
+    },
+    setItemDurably(key, value) {
+      // Restore/import must leave the old working copy intact if persistence fails.
+      write(key, value, false);
     },
     removeItem(key) {
       window.localStorage.removeItem(scope + key);
@@ -66,7 +79,9 @@ export const appStorage = scopedStorage(prefix);
 export const demoCampaignStorage = scopedStorage("pcm-demo:campaign:");
 function keys(scope = prefix) {
   const belongs = (key: string) =>
-    scope ? key.startsWith(scope) : !key.startsWith("pcm-demo:");
+    scope
+      ? key.startsWith(scope)
+      : !key.startsWith("pcm-demo:") && !key.startsWith("pcm-d1:");
   const result = new Set<string>();
   try {
     for (let i = 0; i < window.localStorage.length; i++) {

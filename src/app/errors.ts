@@ -8,7 +8,11 @@ export type ErrorCode =
   | "storage"
   | "cancelled"
   | "uncertain"
-  | "server";
+  | "server"
+  | "rejected"
+  | "rate-limit"
+  | "unsupported"
+  | "not-found";
 export type DataIssue = {
   path: string;
   expected: string;
@@ -18,6 +22,8 @@ export type DataIssue = {
   recordIndex?: number;
 };
 export class AppError extends Error {
+  retryAfterSeconds?: number;
+  requestId?: string;
   constructor(
     public code: ErrorCode,
     message: string,
@@ -64,6 +70,13 @@ export type SyncProgress = { completed: number; total: number; label: string };
 export function definitelyNotApplied(error: unknown) {
   return (
     error instanceof AppError &&
-    ["offline", "session", "permission"].includes(error.code)
+    [
+      "offline",
+      "session",
+      "permission",
+      "rejected",
+      "rate-limit",
+      "unsupported",
+    ].includes(error.code)
   );
 }
