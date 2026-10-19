@@ -2,7 +2,38 @@
 
 Deploy a separate staging API and database first. The frontend calls the Worker over HTTPS; the Worker accesses D1 through its `DB` binding. D1 credentials never go into the frontend.
 
-The current backend supports only the operations listed in [the migration guide](d1-migration.md). Account lifecycle, most game mutations, scheduled jobs, uploads and integrations still need migration. Keep the existing production frontend on Sheets while evaluating D1 in a separate frontend project or preview environment.
+The backend now covers the existing app operations listed in [the migration guide](d1-migration.md). Evaluate it in a separate frontend project or preview environment until DM/player acceptance checks pass. New files are stored in D1; no R2 subscription or bucket is required. Registration uses optional Worker secrets; scheduled processing uses the configured Cron trigger.
+
+## Updating an already imported D1 installation
+
+Do **not** rerun the campaign SQL import or reset the database. After testing these changes in staging, use the account/database already configured in `wrangler.jsonc`:
+
+```bash
+npx wrangler d1 migrations apply DB --remote
+```
+
+Migration `0006_d1_file_storage.sql` adds file storage to the existing database. Registration keys are optional if registration should stay closed; otherwise set fresh keys:
+
+```bash
+npx wrangler secret put REGISTRATION_PLAYER_KEY
+npx wrangler secret put REGISTRATION_DM_KEY
+```
+
+Each command prompts for a secret. Never put these keys in `VITE_*` variables or source control. Existing accounts can sign in and recover passwords without registration keys.
+
+If the campaign calendar is not UTC, set the `campaignTimeZone` D1 setting to the old Apps Script's IANA timezone before deploying the Cron trigger. For example, after verifying the timezone:
+
+```bash
+npx wrangler d1 execute DB --remote --command "INSERT INTO settings(key,value) VALUES('campaignTimeZone','America/New_York') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+```
+
+Deploy the Worker, which also installs its one-minute Cron schedule, and rebuild/redeploy the frontend with `VITE_API_BACKEND=d1`, its Worker API URL and demo mode disabled:
+
+```bash
+npx wrangler deploy
+```
+
+Then test scouting result viewing and player visibility, recruitment, field development, uploads, account recovery and wallet backup/restore. Re-enter Discord webhooks through the DM UI; existing script-property credentials are not automatically transferred. Existing Drive links remain supported. No hosted resources are changed merely by updating the repository.
 
 ## 1. Confirm the code and Cloudflare account
 
@@ -70,7 +101,7 @@ Verify the configured name and UUID refer to staging, then run:
 npx wrangler d1 migrations apply DB --remote
 ```
 
-Apply all migration files, including `0003_write_versions.sql`. They create the schema and add wallet and character write protection. A local migration or local seed does not populate the remote database. Do not paste migration SQL into the frontend or upload the database as a static asset.
+Apply all migration files, including `0004_game_operations.sql`, `0005_account_challenges.sql` and `0006_d1_file_storage.sql`. They add game operations, account recovery, write protection and D1 file storage. A local migration or local seed does not populate the remote database. Do not paste migration SQL into the frontend or upload the database as a static asset.
 
 ## 4. Import validated data once
 
@@ -98,6 +129,8 @@ Import is a one-time seed, not an update of an existing campaign. Do not rerun a
 Without imported accounts, the API can answer health checks but nobody can sign in. Do not publish the synthetic local test accounts as production accounts.
 
 ## 5. Deploy the Worker API
+
+Apply all D1 migrations first. Configure registration secrets only if new account registration should be enabled.
 
 ```bash
 npx wrangler deploy
@@ -145,6 +178,12 @@ For a browser CORS failure, compare the actual frontend origin with `ALLOWED_ORI
 npx wrangler tail
 ```
 
-A 501 response identifies an operation that still needs migration; it is not resolved by changing the database binding. Once staging acceptance and the remaining API/cron/file migration work are complete, plan production cutover with a fresh validated export, reconciled browser wallets and a rollback/reconciliation procedure.
+Unknown operation names return HTTP 400. Missing registration configuration returns an explicit service error; a queued Discord notification can report unconfirmed delivery. Once staging acceptance and service configuration are complete, plan production cutover with a fresh validated export, reconciled browser wallets and a rollback/reconciliation procedure.
 
 References: [D1 setup and bindings](https://developers.cloudflare.com/d1/get-started/), [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/), [Cloudflare Pages builds](https://developers.cloudflare.com/pages/configuration/build-configuration/), [Vite environment variables](https://vite.dev/guide/env-and-mode).
+
+## File storage on the Free plan
+
+Uploads use D1 only. Each file is limited to 5 MiB and split into small base64 parts to fit D1 row limits. Metadata, content and campaign references save in one transaction; reads verify the saved content hash. Replacing a file, deleting a portrait or deleting a territory removes its D1 file content in the same transaction. Existing Drive links remain supported without copying files.
+
+The application caps file content at 128 MiB of encoded data (roughly 96 MiB of original files). Base64 adds approximately one third to file size; table and index storage add overhead too. This cap leaves room for campaign records within D1 Free's 500 MB per-database limit, but it does not reserve space or enforce the whole database's size. Monitor database usage and daily quotas in Cloudflare. When the upload cap is reached, the API rejects new files with an actionable message while preserving the current file. The Free plan has daily read/write limits; it is suitable while the campaign fits those limits, not unlimited storage or traffic. See [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).

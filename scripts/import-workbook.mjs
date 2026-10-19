@@ -321,7 +321,12 @@ export function convertWorkbook(sheets) {
               data.active ? 1 : 0,
               passwordSalt,
               passwordHash,
-              JSON.stringify(safe),
+              JSON.stringify({
+                ...safe,
+                ...(recoveryAnswerSalt && recoveryAnswerHash
+                  ? { recoveryAnswerSalt, recoveryAnswerHash }
+                  : {}),
+              }),
             ],
           ),
         );
@@ -628,12 +633,126 @@ export function convertWorkbook(sheets) {
     statements.push(statement);
   }
   const settingKeys = new Set();
+  const offerIds = new Set();
+  for (const [index, source] of (
+    sheets["Territory Recruitment"] || []
+  ).entries()) {
+    sourceLocation = {
+      sheet: "Territory Recruitment",
+      row: index + 2,
+      field: "row",
+    };
+    const data = Object.fromEntries(
+      Object.entries(source).map(([key, value]) => [
+        key,
+        value instanceof Date ? value.toISOString() : value,
+      ]),
+    );
+    const id = String(data.offerId || "");
+    if (!id || offerIds.has(id))
+      issue(
+        "Territory Recruitment",
+        index + 2,
+        "offerId",
+        "expected a nonempty unique offer ID",
+      );
+    offerIds.add(id);
+    for (const [field, max] of [
+      ["percentileRoll", 100],
+      ["quantityRoll", 10],
+      ["quantity", 1000000],
+    ])
+      if (
+        !Number.isSafeInteger(data[field]) ||
+        data[field] < 1 ||
+        data[field] > max
+      )
+        issue(
+          "Territory Recruitment",
+          index + 2,
+          field,
+          "expected a positive integer within the recruitment limit",
+        );
+    if (typeof data.soldierType !== "string" || !data.soldierType.trim())
+      issue(
+        "Territory Recruitment",
+        index + 2,
+        "soldierType",
+        "required text is missing",
+      );
+    if (!["available", "recruited", "denied", "reset"].includes(data.status))
+      issue("Territory Recruitment", index + 2, "status", "unexpected value");
+    if (!players.has(String(data.playerId)))
+      issue(
+        "Territory Recruitment",
+        index + 2,
+        "playerId",
+        "owner does not exist",
+      );
+    if (!Number.isFinite(Date.parse(String(data.rollDate || ""))))
+      issue("Territory Recruitment", index + 2, "rollDate", "invalid date");
+    if (!characters.has(String(data.characterId)))
+      issue(
+        "Territory Recruitment",
+        index + 2,
+        "characterId",
+        "character does not exist",
+      );
+    if (territories.get(String(data.territoryId)) !== String(data.characterId))
+      issue(
+        "Territory Recruitment",
+        index + 2,
+        "territoryId",
+        "territory does not belong to this character",
+      );
+    statements.push(
+      insert(
+        "records",
+        [
+          "kind",
+          "id",
+          "character_id",
+          "territory_id",
+          "hex_key",
+          "mutation_id",
+          "updated_at",
+          "data",
+        ],
+        [
+          "recruitment",
+          id,
+          data.characterId,
+          data.territoryId,
+          null,
+          null,
+          data.createdAt || "",
+          JSON.stringify(data),
+        ],
+      ),
+    );
+  }
   for (const [index, row] of (sheets.Settings || []).entries()) {
-    if (!["campaignName", "coinWeightPerPound"].includes(row.key)) continue;
+    if (
+      !["campaignName", "coinWeightPerPound", "campaignTimeZone"].includes(
+        row.key,
+      )
+    )
+      continue;
     sourceLocation = { sheet: "Settings", row: index + 2, field: "value" };
     if (settingKeys.has(row.key))
       issue("Settings", index + 2, "key", "duplicate setting key");
     settingKeys.add(row.key);
+    if (row.key === "campaignTimeZone")
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: String(row.value) });
+      } catch {
+        issue(
+          "Settings",
+          index + 2,
+          "value",
+          "expected a valid IANA campaign timezone",
+        );
+      }
     statements.push(insert("settings", ["key", "value"], [row.key, row.value]));
   }
   // Preserve the source archive, applying the same SQL limits as live records.

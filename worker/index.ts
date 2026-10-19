@@ -3,10 +3,24 @@ import {
   canonicalJSON,
   validateWalletBackupFields,
 } from "../shared/records.mjs";
-/** Staging migration API. Unsupported operations fail explicitly until ported. */
+import { ApiError } from "./errors";
+import { gameMutation, migratedGameActions } from "./game";
+import {
+  accountAction,
+  createPasswordChallenge,
+  passwordHash,
+  passwordMatches,
+} from "./accounts";
+import { adminAction, adminActions } from "./admin";
+import { mediaAction, mediaActions, serveMedia } from "./media";
+import { deliverNotifications, queueJournal } from "./notifications";
+import { runScheduled } from "./scheduled";
+/** Campaign API and uploaded file storage backed by D1. */
 export interface Env {
   DB: D1Database;
   ALLOWED_ORIGINS: string;
+  REGISTRATION_PLAYER_KEY?: string;
+  REGISTRATION_DM_KEY?: string;
 }
 type Data = Record<string, any>;
 type Player = {
@@ -17,17 +31,9 @@ type Player = {
   password_salt: string;
   password_hash: string;
   data: string;
+  webhook_configured?: number;
 };
 type RecordRow = { id: string; updated_at: string; data: string };
-class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-    public retryAfterSeconds?: number,
-  ) {
-    super(message);
-  }
-}
 function nextVersion(previous: string) {
   const parsed = Date.parse(previous);
   return new Date(
@@ -83,7 +89,7 @@ function publicPlayer(player: Player) {
     active: !!player.active,
     territoriesEnabled: !!data.territoriesEnabled,
     retainersEnabled: true,
-    discordWebhookConfigured: false,
+    discordWebhookConfigured: !!player.webhook_configured,
   };
 }
 function publicCharacter(row: { data: string; version?: number }, dm: boolean) {
@@ -97,9 +103,12 @@ function publicCharacter(row: { data: string; version?: number }, dm: boolean) {
     level: data.level,
     portraitFileId: data.portraitFileId || "",
     portraitFileName: data.portraitFileName || "",
-    discordConfigured: false,
+    discordConfigured:
+      !!data.discordThreadId && !!(row as any).webhook_configured,
   };
-  if (data.portraitFileId)
+  if (data.portraitFileId && /^(?:d1|r2):/.test(data.portraitFileId))
+    result.portraitUrl = data.portraitUrl || "";
+  else if (data.portraitFileId)
     result.portraitUrl = `https://drive.google.com/thumbnail?id=${encodeURIComponent(data.portraitFileId)}&sz=w500`;
   if (dm) result.discordThreadId = data.discordThreadId || "";
   return result;
@@ -120,11 +129,14 @@ async function account(db: D1Database, player: Player) {
   const dm = player.role === "dm";
   const [players, characters] = await Promise.all([
     dm
-      ? all<Player>(db, "SELECT * FROM players WHERE active = 1 ORDER BY id")
+      ? all<Player>(
+          db,
+          "SELECT p.*,EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=p.id) AS webhook_configured FROM players p WHERE active = 1 ORDER BY id",
+        )
       : Promise.resolve([]),
     all<{ data: string; version: number }>(
       db,
-      `SELECT data, version FROM characters WHERE active = 1 ${dm ? "" : "AND player_id = ?"} ORDER BY id`,
+      `SELECT data, version, EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=characters.player_id) AS webhook_configured FROM characters WHERE active = 1 ${dm ? "" : "AND player_id = ?"} ORDER BY id`,
       ...(dm ? [] : [player.id]),
     ),
   ]);
@@ -139,7 +151,7 @@ async function authenticated(db: D1Database, token: unknown) {
     throw new ApiError(401, "Session expired.");
   const player = await db
     .prepare(
-      "SELECT p.* FROM players p JOIN sessions s ON s.player_id = p.id WHERE s.token_hash = ? AND s.expires_at > ? AND p.active = 1",
+      "SELECT p.*,EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=p.id) AS webhook_configured FROM players p JOIN sessions s ON s.player_id = p.id WHERE s.token_hash = ? AND s.expires_at > ? AND p.active = 1",
     )
     .bind(await digest(token), new Date().toISOString())
     .first<Player>();
@@ -216,10 +228,10 @@ async function territoryStatus(db: D1Database, player: Player, char: string) {
   ]);
   const territories = territoryRows.map((row) => {
     const data = JSON.parse(row.data);
-    data.scoutingWebhookConfigured = false;
+    data.scoutingWebhookConfigured = !!data.scoutingWebhookUrl;
     delete data.scoutingWebhookUrl;
     for (const name of ["map", "poiMap"])
-      if (data[name + "FileId"])
+      if (data[name + "FileId"] && !/^(?:d1|r2):/.test(data[name + "FileId"]))
         data[name + "Url"] =
           `https://drive.google.com/thumbnail?id=${encodeURIComponent(data[name + "FileId"])}&sz=w2400`;
     if (!dm)
@@ -348,32 +360,52 @@ async function login(db: D1Database, input: Data, ip: string) {
     )
     .bind(id, email)
     .first<Player>();
-  const candidate = await digest(
-    `${player?.password_salt || "missing"}:${password}`,
-  );
-  if (!player || !equal(candidate, player.password_hash))
+  if (
+    !player ||
+    !(await passwordMatches(
+      password,
+      player.password_salt,
+      player.password_hash,
+    ))
+  )
     throw new ApiError(400, "Incorrect account, email, or password.");
   if (JSON.parse(player.data).mustChangePassword)
-    throw new ApiError(
-      501,
-      "Initial password changes have not been migrated. Use the current production app for this account.",
-    );
+    return createPasswordChallenge(db, player);
+  // Upgrade imported hashes after a successful login without invalidating an
+  // intervening password reset. Existing sessions remain hashed in D1.
+  if (!player.password_hash.startsWith("pbkdf2:")) {
+    const salt = crypto.randomUUID(),
+      upgraded = await passwordHash(password, salt);
+    const updated = await db
+      .prepare(
+        "UPDATE players SET password_salt=?,password_hash=? WHERE id=? AND password_hash=? RETURNING id",
+      )
+      .bind(salt, upgraded, player.id, player.password_hash)
+      .first();
+    if (!updated)
+      throw new ApiError(409, "Account credentials changed. Sign in again.");
+    player.password_salt = salt;
+    player.password_hash = upgraded;
+  }
   const sessionToken = crypto.randomUUID() + crypto.randomUUID();
-  await db.batch([
+  const sessionWrite = await db.batch([
     db
       .prepare(
-        "INSERT INTO sessions(token_hash, player_id, expires_at) VALUES (?, ?, ?)",
+        "INSERT INTO sessions(token_hash, player_id, expires_at) SELECT ?,id,? FROM players WHERE id=? AND active=1 AND password_hash=?",
       )
       .bind(
         await digest(sessionToken),
-        player.id,
         new Date(Date.now() + 30 * 86400000).toISOString(),
+        player.id,
+        player.password_hash,
       ),
     db
       .prepare("DELETE FROM login_attempts WHERE key = ? OR expires_at <= ?")
       .bind(key, now),
     db.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
   ]);
+  if (sessionWrite[0].meta.changes !== 1)
+    throw new ApiError(409, "Account credentials changed. Sign in again.");
   return {
     ok: true,
     mustChangePassword: false,
@@ -818,7 +850,7 @@ async function dispatch(request: Request, env: Env, input: Data) {
   if (read && action === "auth.options") {
     const rows = await all<Player>(
       db,
-      "SELECT * FROM players WHERE active = 1 ORDER BY id",
+      "SELECT p.*,EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=p.id) AS webhook_configured FROM players p WHERE active = 1 ORDER BY id",
     );
     return {
       ok: true,
@@ -846,12 +878,96 @@ async function dispatch(request: Request, env: Env, input: Data) {
       "auth.recovery.question",
       "auth.recovery.reset",
     ].includes(action)
-  )
-    throw new ApiError(
-      501,
-      "Account creation, password changes and recovery have not been migrated. Use the current production app for this operation.",
+  ) {
+    const result = await accountAction(
+      env,
+      input,
+      action,
+      request.headers.get("CF-Connecting-IP") || "local",
     );
+    if (action === "auth.password.change") {
+      const current = await authenticated(db, result.sessionToken);
+      return {
+        ok: true,
+        sessionToken: result.sessionToken,
+        ...(await account(db, current)),
+      };
+    }
+    return result;
+  }
   const player = await authenticated(db, input.sessionToken);
+  if (!read && adminActions.has(action)) {
+    const result = await adminAction(db, input, action, player);
+    if (result.playerRow)
+      return { ok: true, player: publicPlayer(result.playerRow as Player) };
+    if (result.characterRow)
+      return {
+        ok: true,
+        character: publicCharacter(result.characterRow as any, true),
+      };
+    return result;
+  }
+  if (!read && mediaActions.has(action)) {
+    const char = required(input.characterId);
+    await characterAccess(db, player, char);
+    const result = await mediaAction(
+      request,
+      env,
+      {
+        ...publicPlayer(player),
+        playerId: player.id,
+        sessionHash: await digest(input.sessionToken),
+      },
+      input,
+      action,
+    );
+    if (result.character) {
+      const row = await db
+        .prepare(
+          "SELECT data,version,EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=characters.player_id) AS webhook_configured FROM characters WHERE id=?",
+        )
+        .bind(char)
+        .first<{ data: string; version: number }>();
+      result.character = publicCharacter(row!, player.role === "dm");
+    }
+    if (result.territory) {
+      result.territory.scoutingWebhookConfigured =
+        !!result.territory.scoutingWebhookUrl;
+      delete result.territory.scoutingWebhookUrl;
+    }
+    return result;
+  }
+  if (!read && action === "journal.discord.send") {
+    await characterAccess(db, player, required(input.characterId));
+    const ids = await queueJournal(db, player, input);
+    for (const id of ids) await deliverNotifications(db, fetch, id);
+    const sent = await db
+      .prepare(
+        "SELECT count(*) AS n FROM notification_outbox WHERE id IN(SELECT value FROM json_each(?)) AND status='sent'",
+      )
+      .bind(JSON.stringify(ids))
+      .first<{ n: number }>();
+    if (sent?.n !== ids.length)
+      throw new ApiError(
+        503,
+        "The Discord message is queued but delivery is not confirmed. Try again later.",
+      );
+    return { ok: true, messagesSent: ids.length };
+  }
+  if (!read && migratedGameActions.has(action)) {
+    const char = required(input.characterId);
+    await characterAccess(db, player, char);
+    return gameMutation(
+      db,
+      {
+        ...publicPlayer(player),
+        playerId: player.id,
+        sessionHash: await digest(input.sessionToken),
+      },
+      input,
+      action,
+    );
+  }
   if (
     !read &&
     ["character.create", "character.update", "character.delete"].includes(
@@ -883,7 +999,7 @@ async function dispatch(request: Request, env: Env, input: Data) {
       journal,
       campaignName: config.campaignName || "Player Character Manager",
       coinWeightPerPound: Number(config.coinWeightPerPound) || 10,
-      discordWebhookConfigured: false,
+      discordWebhookConfigured: !!player.webhook_configured,
       permissions: {
         isDm: player.role === "dm",
         territories:
@@ -911,10 +1027,7 @@ async function dispatch(request: Request, env: Env, input: Data) {
         "wallet.backup.load",
       ];
   if (!supported.includes(action))
-    throw new ApiError(
-      501,
-      `The ${action} operation has not been migrated to D1. Use the current production app for this operation.`,
-    );
+    throw new ApiError(400, "Unknown campaign operation.");
   const char = required(input.characterId);
   await characterAccess(db, player, char);
   if (read) {
@@ -971,12 +1084,13 @@ async function dispatch(request: Request, env: Env, input: Data) {
       };
     }
   }
-  throw new ApiError(
-    501,
-    `The ${action} operation has not been migrated to D1. Use the current production app for this operation.`,
-  );
+  throw new ApiError(400, "Unknown campaign operation.");
 }
 const knownActions = new Set([
+  ...migratedGameActions,
+  ...adminActions,
+  ...mediaActions,
+  "journal.discord.send",
   "health",
   "auth.options",
   "auth.login",
@@ -1044,8 +1158,16 @@ const errorCodes: Record<number, string> = {
   413: "invalid_request",
   429: "rate_limited",
   501: "not_implemented",
+  503: "service_unavailable",
 };
 export default {
+  async scheduled(
+    _event: ScheduledController,
+    env: Env,
+    _ctx?: ExecutionContext,
+  ) {
+    await runScheduled(env.DB);
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     const requestId = crypto.randomUUID();
     let action = "unknown";
@@ -1071,6 +1193,20 @@ export default {
         throw new ApiError(403, "Origin is not allowed.");
       if (request.method === "OPTIONS")
         return new Response(null, { status: 204, headers });
+      const mediaPath = /^\/files\/([a-f0-9-]{36})$/.exec(
+        new URL(request.url).pathname,
+      );
+      if (request.method === "GET" && mediaPath) {
+        const response = await serveMedia(request, env, mediaPath[1]);
+        for (const [name, value] of headers)
+          if (
+            name.startsWith("access-control-") ||
+            name === "vary" ||
+            name === "x-request-id"
+          )
+            response.headers.set(name, value);
+        return response;
+      }
       if (!["GET", "POST"].includes(request.method))
         throw new ApiError(405, "Method not allowed.");
       let input: Data;
@@ -1086,7 +1222,7 @@ export default {
           const { done, value } = await reader.read();
           if (done) break;
           size += value.length;
-          if (size > 1024 * 1024) {
+          if (size > 8 * 1024 * 1024) {
             await reader.cancel();
             throw new ApiError(413, "Request too large.");
           }

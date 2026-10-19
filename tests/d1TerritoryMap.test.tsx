@@ -4,9 +4,13 @@ import { TerritoriesView } from "../src/components/TerritoryViews";
 import { territoryActions } from "../src/app/territoryActions";
 // @ts-expect-error Synthetic workbook fixture shared with the D1 seed.
 import { fixtureSheets } from "../scripts/d1-fixture.mjs";
-function renderTerritory(withMap = true) {
+function renderTerritory(withMap = true, storedMap = false) {
   const fixture = fixtureSheets();
   const territory = { ...fixture.Territories[0], assets: [] };
+  if (storedMap) {
+    territory.mapFileId = "d1:synthetic-file";
+    territory.mapUrl = "https://campaign.example/files/synthetic-file";
+  }
   if (!withMap) {
     delete territory.mapUrl;
     delete territory.mapFileId;
@@ -77,4 +81,13 @@ it("explains why a territory without an assigned map cannot be opened", () => {
   expect(
     screen.queryByRole("button", { name: "Open map for Test Territory" }),
   ).toBeNull();
+});
+it("opens a D1 map directly without first requesting a Google Drive thumbnail", () => {
+  const { container } = renderTerritory(true, true);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Open map for Test Territory" }),
+  );
+  expect(
+    container.querySelector(".tap-reveal-base-map")?.getAttribute("src"),
+  ).toBe("https://campaign.example/files/synthetic-file");
 });

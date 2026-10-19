@@ -4,7 +4,10 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-10-14",
   "workers_dev": true,
-  "vars": { "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,https://player-character-manager.canterburysocietyinfo.workers.dev" },
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,https://player-character-manager.canterburysocietyinfo.workers.dev",
+  },
   "d1_databases": [
     {
       "binding": "DB",

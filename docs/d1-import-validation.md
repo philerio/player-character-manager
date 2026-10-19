@@ -8,7 +8,7 @@ The original's 46 orphan records refer to nine character IDs absent from all 12 
 
 At the user's request, the import copy excludes 19 recurring expenses and 27 wallet transactions for those missing IDs. All remaining data rows were verified unchanged after writing and reopening the workbook. Removed records, their original sheet/row locations and file hashes are retained privately in `migration-output/workbook-cleanup-2026-10-19.json`.
 
-Validation passes with zero errors. Importing the generated SQL into a disposable in-memory SQLite database with all three migrations also passes foreign-key and integrity checks. The copy retains all 12 characters, 30 recurring expenses and 136 wallet transactions. SQL is available privately at `migration-output/d1-import-2026-10-19.sql`; no local working database, hosted database or Google Sheet was modified.
+Validation passes with zero errors. Importing the generated SQL into a disposable in-memory SQLite database with all three migrations also passes foreign-key and integrity checks. The copy retains all 12 characters, 30 recurring expenses and 136 wallet transactions. Updated SQL for a fresh empty destination is available privately at `migration-output/d1-import-2026-10-19-v2.sql` (including live recruitment offers and private account recovery hashes). Existing imported databases should apply schema migrations 0004/0005 instead of reimporting; no local working database, hosted database or Google Sheet was modified.
 
 ```bash
 npm run d1:import -- "playerData/Player Character Manager - D1 import.xlsx"

@@ -111,7 +111,14 @@ export function requestCampaign(
               if (Number.isFinite(seconds))
                 error.retryAfterSeconds = Math.max(0, seconds);
             }
-          } else if (response.status === 501)
+          } else if (response.status === 503)
+            error = new AppError(
+              "server",
+              message ||
+                "The campaign service is temporarily unavailable. Your working copy was kept.",
+              !write,
+            );
+          else if (response.status === 501)
             error = new AppError(
               "unsupported",
               message ||

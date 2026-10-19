@@ -5,6 +5,7 @@ import { requestCampaign, cancelAllReads } from "./app/transport";
 import { apiBackend, apiUrl, isDemoMode } from "./app/runtime";
 import { demoRequest, getDemoBootstrap } from "./app/demoApi";
 import { appStorage } from "./app/storage";
+import { withD1Command } from "./app/d1Commands";
 export type SheetCharacter = {
   characterId: string;
   version?: number;
@@ -367,6 +368,32 @@ export type RegistrationResult = {
 
 const SCRIPT_URL = isDemoMode ? "https://demo.invalid/sheets" : apiUrl;
 function requestSheet(url: string, options?: RequestInit) {
+  if (
+    apiBackend === "d1" &&
+    !isDemoMode &&
+    options?.method === "POST" &&
+    typeof options.body === "string"
+  ) {
+    const action = JSON.parse(options.body).action || "";
+    if (
+      !action.startsWith("auth.") &&
+      ![
+        "character.create",
+        "character.update",
+        "character.delete",
+        "journal.create",
+        "journal.update",
+        "journal.delete",
+        "wallet.backup.save",
+        "wallet.backup.load",
+        "territory.hex.upsert",
+        "tab.push",
+      ].includes(action)
+    )
+      return withD1Command(options, (next) =>
+        requestCampaign(url, next, fetch),
+      );
+  }
   return requestCampaign(url, options, isDemoMode ? demoRequest : fetch);
 }
 const ACCESS_KEY =

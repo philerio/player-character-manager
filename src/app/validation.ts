@@ -297,7 +297,6 @@ const mutationRecords: Record<string, Array<[string, string, string?]>> = {
   "journal.update": [["entry", "journal", "entryId"]],
   "territory.recruitment.complete": [
     ["retainer", "retainers"],
-    ["schedule", "recurringExpenses"],
     ["transaction", "transactions"],
   ],
 };
@@ -480,7 +479,13 @@ function validateActionResult(
   } else if (action === "territory.recruitment.reset") {
     count(data.resetCount, "resetCount");
   }
-  if (["retainer.create", "retainer.update"].includes(action)) {
+  if (
+    [
+      "retainer.create",
+      "retainer.update",
+      "territory.recruitment.complete",
+    ].includes(action)
+  ) {
     if (data.schedule !== null)
       rows(
         { recurringExpenses: [object(data.schedule, "schedule")] },

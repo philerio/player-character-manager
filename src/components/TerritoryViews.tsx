@@ -985,6 +985,7 @@ function normalizeTapReveals(value: unknown): TapRevealPoint[] {
 }
 
 function driveImageSources(url?: string, fileId?: string, width = 2400) {
+  if (fileId && /^(?:d1|r2):/.test(fileId)) return url ? [url] : [];
   const sources = [
     fileId ? `https://drive.google.com/thumbnail?id=${encodeURIComponent(fileId)}&sz=w${width}` : "",
     url || "",
