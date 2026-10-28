@@ -33,6 +33,25 @@ can be recorded under **Unreleased** without changing the displayed app version.
 - Added this version history and repository instructions for maintaining it with
   future updates.
 
+## v1.2.3 — 2026-10-28
+
+### Quiet automatic refresh
+
+- Routine automatic campaign checks no longer show Updating/progress beside the
+  character name or change the header to Refreshing campaign.
+- Initial loading, manual refreshes, saves, errors, and detailed dropdown progress
+  remain visible. Automatic checks and data synchronization continue unchanged.
+- Desktop and mobile version labels now read v1.2.3 from the package version.
+
+**Deployment:** Rebuild/deploy the UI from a clean committed checkout. No API
+update, database migration, or workbook import is required. Prepared locally;
+not confirmed deployed.
+
+**Validation:** All 164 frontend tests passed, including quiet automatic refresh
+and visible manual refresh coverage. TypeScript checks, production build, and
+formatting checks passed. Build reports a chunk-size advisory; no lint script is
+configured.
+
 ## v1.2.2 — 2026-10-19
 
 ### Sign-in and password recovery

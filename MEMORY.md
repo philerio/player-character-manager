@@ -22,7 +22,8 @@ A commit and a remote push are distinct; report their status accurately.
 - D1 now includes accounts, game operations, file storage, scheduling, diagnostics,
   and backup/recovery tooling. Read docs/d1-migration.md, docs/d1-deployment.md,
   and docs/d1-recovery.md before planning hosted changes.
-- Earlier auto-refresh UI work is stashed, not part of the current checkout.
-  Do not apply it automatically. Version 1.2.2 already belongs to email-only login;
-  any future app update must follow the current version history.
+- Earlier auto-refresh UI work remains stashed for reference. The quiet refresh
+  fix was reconciled with the latest source as v1.2.3 on 2026-10-28; consult Git
+  and CHANGELOG.md for commit/deployment status. Version 1.2.2 belongs to email-only
+  login. Do not replay the old stash or its deployment configuration.
 - After code edits, run formatting and appropriate static checks/tests.

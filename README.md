@@ -172,7 +172,9 @@ check is useful, but routine edits do not require a Sync click.
 | Due scouting                                        | Submits expired local timers, including when reopening the app.                                                                                                                                                              |
 | Uploads, account administration, and backup restore | Explicit service actions; failed forms retain their inputs.                                                                                                                                                                  |
 
-A compact loading indicator sits beside the selected character’s name. Its
+Routine automatic refresh checks run quietly. A compact loading indicator sits
+beside the selected character’s name during initial loading, manual refreshes,
+and saves. Its
 dropdown contains detailed progress, saved local changes, pending work,
 confirmed campaign data, offline status, and retry controls. Errors remain
 visible on the page even with the dropdown closed. Cached screens stay usable

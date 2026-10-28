@@ -157,3 +157,60 @@ it("keeps refresh progress with the character name and inside its dropdown", asy
     ).toBeNull(),
   );
 });
+it("keeps automatic checks quiet beside the character name but shows manual refresh progress", async () => {
+  const view = render(<App />);
+  const selector = await screen.findByRole("button", {
+    name: "Rowan Ashford",
+    hidden: true,
+  });
+  await waitFor(() =>
+    expect(
+      within(selector).queryByRole("progressbar", { hidden: true }),
+    ).toBeNull(),
+  );
+  const revisions =
+    deferred<Awaited<ReturnType<typeof api.loadTabSyncRevisions>>>();
+  const read = vi
+    .spyOn(api, "loadTabSyncRevisions")
+    .mockReturnValue(revisions.promise);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+  fireEvent.focus(window);
+  await waitFor(() => expect(read).toHaveBeenCalled());
+  expect(
+    within(selector).queryByRole("progressbar", { hidden: true }),
+  ).toBeNull();
+  fireEvent.click(selector);
+  const menu = view.container.querySelector<HTMLElement>(".character-menu")!;
+  await waitFor(() =>
+    expect(
+      within(
+        menu.querySelector<HTMLElement>(".workflow-status")!,
+      ).getByRole<HTMLButtonElement>("button", {
+        hidden: true,
+        name: "Refresh now",
+      }).disabled,
+    ).toBe(true),
+  );
+  await act(async () =>
+    revisions.resolve({ wallet: 0, journal: 0, retainers: 0, territories: 0 }),
+  );
+  const refresh = within(
+    menu.querySelector<HTMLElement>(".workflow-status")!,
+  ).getByRole<HTMLButtonElement>("button", {
+    hidden: true,
+    name: "Refresh now",
+  });
+  await waitFor(() => expect(refresh.disabled).toBe(false));
+  const manual =
+    deferred<Awaited<ReturnType<typeof api.loadTabSyncRevisions>>>();
+  read.mockReturnValue(manual.promise);
+  fireEvent.click(refresh);
+  await waitFor(() =>
+    expect(
+      within(selector).getByRole("progressbar", { hidden: true }),
+    ).toBeTruthy(),
+  );
+  await act(async () =>
+    manual.resolve({ wallet: 0, journal: 0, retainers: 0, territories: 0 }),
+  );
+});

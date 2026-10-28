@@ -113,6 +113,7 @@ export function useBackgroundSync(
     typeof navigator === "undefined" || navigator.onLine,
   );
   const [refreshing, setRefreshing] = useState(false);
+  const [foregroundRefreshing, setForegroundRefreshing] = useState(false);
   const [phase, setPhase] = useState("");
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [error, setError] = useState("");
@@ -183,6 +184,10 @@ export function useBackgroundSync(
       const work = async () => {
         if (current()) {
           setRefreshing(true);
+          setForegroundRefreshing(
+            force ||
+              names.some((name) => !stateRef.current[id]?.[name]?.hasData),
+          );
           setError("");
           setPhase("Checking campaign updates…");
         }
@@ -522,6 +527,7 @@ export function useBackgroundSync(
         } finally {
           if (current()) {
             setRefreshing(false);
+            setForegroundRefreshing(false);
             setPhase("");
             setProgress(null);
             ctx.setRosterRefreshing(false);
@@ -544,6 +550,7 @@ export function useBackgroundSync(
     ready.current = false;
     lock.current = null;
     setRefreshing(false);
+    setForegroundRefreshing(false);
     setProgress(null);
     setError("");
     if (!characterId || !authenticated) return;
@@ -660,6 +667,7 @@ export function useBackgroundSync(
     resources,
     online,
     refreshing,
+    foregroundRefreshing,
     phase,
     progress,
     error:

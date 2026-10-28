@@ -223,6 +223,13 @@ export function AppShell({
     territorySyncing ||
     journalSyncing ||
     profileSyncing;
+  const characterVisiblyBusy =
+    background.foregroundRefreshing ||
+    (rosterRefreshing && !background.refreshing) ||
+    retainerSyncing ||
+    territorySyncing ||
+    journalSyncing ||
+    profileSyncing;
   const characterError =
     background.error ||
     retainerSyncError ||
@@ -393,13 +400,13 @@ export function AppShell({
                 >
                   <span className="character-selector-label">
                     <span>{selectedCharacter?.name || "Choose character"}</span>
-                    {characterBusy && (
+                    {characterVisiblyBusy && (
                       <CharacterLoadingIndicator
                         name={selectedCharacter?.name || "selected character"}
                         progress={characterProgress}
                       />
                     )}
-                    {!characterBusy && characterError && (
+                    {!characterVisiblyBusy && characterError && (
                       <span className="character-status-hint">
                         Action needed
                       </span>
@@ -652,7 +659,7 @@ export function AppShell({
                   ? "Demo data"
                   : !background.online
                     ? "Offline · Local copy"
-                    : background.refreshing
+                    : background.foregroundRefreshing
                       ? "Refreshing campaign…"
                       : background.error
                         ? "Campaign unavailable"
