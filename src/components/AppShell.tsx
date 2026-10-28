@@ -1,3 +1,5 @@
+import { BackendStatus } from "./BackendStatus";
+import { version } from "../../package.json";
 import { DataDiagnostics } from "./DataDiagnostics";
 import {
   ResourceFeedback,
@@ -9,7 +11,7 @@ import {
 import { useAccountCommands } from "../app/useAccountCommands";
 import { territoryActions } from "../app/territoryActions";
 import { useTerritoryCommands } from "../app/useTerritoryCommands";
-import { demoRole, isDemoMode } from "../app/runtime";
+import { apiBackend, demoRole, isDemoMode } from "../app/runtime";
 import { resetDemo } from "../app/storage";
 
 import {
@@ -255,6 +257,7 @@ export function AppShell({
       <FirstPasswordScreen onSave={onSaveFirstPassword} />
     ) : (
       <LoginScreen
+        requiresPlayerSelection={apiBackend !== "d1"}
         players={loginOptions}
         optionsStatus={loginOptionsStatus}
         optionsError={loginOptionsError}
@@ -343,6 +346,12 @@ export function AppShell({
               {permissions.isDm && <Pencil size={12} />}
             </button>
           )}
+          <small
+            className="app-version"
+            aria-label={`Application version ${version}`}
+          >
+            v{version}
+          </small>
         </div>
       </aside>
 
@@ -374,46 +383,57 @@ export function AppShell({
                 <Sword size={22} />
               </div>
             )}
-            <div className="character-heading">
-              <button
-                className="character-button"
-                aria-label={selectedCharacter?.name || "Choose character"}
-                aria-expanded={characterMenu}
-                onClick={() => setCharacterMenu((open) => !open)}
-              >
-                <span className="character-selector-label">
-                  <span>{selectedCharacter?.name || "Choose character"}</span>
-                  {characterBusy && (
-                    <CharacterLoadingIndicator
-                      name={selectedCharacter?.name || "selected character"}
-                      progress={characterProgress}
-                    />
-                  )}
-                  {!characterBusy && characterError && (
-                    <span className="character-status-hint">Action needed</span>
-                  )}
-                </span>
-                <ChevronDown size={18} />
-              </button>
-              {selectedCharacter && (
+            <div className="character-title">
+              <div className="character-heading">
                 <button
-                  className="edit-character-button"
-                  aria-label={`Edit ${selectedCharacter.name}`}
-                  title={`Edit ${selectedCharacter.name}`}
-                  onClick={() => {
-                    setCharacterMenu(false);
-                    setModal("edit-character");
-                  }}
+                  className="character-button"
+                  aria-label={selectedCharacter?.name || "Choose character"}
+                  aria-expanded={characterMenu}
+                  onClick={() => setCharacterMenu((open) => !open)}
                 >
-                  <Pencil size={17} />
+                  <span className="character-selector-label">
+                    <span>{selectedCharacter?.name || "Choose character"}</span>
+                    {characterBusy && (
+                      <CharacterLoadingIndicator
+                        name={selectedCharacter?.name || "selected character"}
+                        progress={characterProgress}
+                      />
+                    )}
+                    {!characterBusy && characterError && (
+                      <span className="character-status-hint">
+                        Action needed
+                      </span>
+                    )}
+                  </span>
+                  <ChevronDown size={18} />
                 </button>
-              )}
+                {selectedCharacter && (
+                  <button
+                    className="edit-character-button"
+                    aria-label={`Edit ${selectedCharacter.name}`}
+                    title={`Edit ${selectedCharacter.name}`}
+                    onClick={() => {
+                      setCharacterMenu(false);
+                      setModal("edit-character");
+                    }}
+                  >
+                    <Pencil size={17} />
+                  </button>
+                )}
+              </div>
+              <small
+                className="app-version mobile-app-version"
+                aria-label={`Application version ${version}`}
+              >
+                v{version}
+              </small>
             </div>
             {characterMenu &&
               (permissions.isDm ? (
                 <div className="character-menu dm-character-menu">
                   {characterStatus}
                   <DataDiagnostics characterId={selectedCharacterId} />
+                  <BackendStatus />
                   {selectedCharacter && hasSheetsConnection() && (
                     <div className="character-menu-sync-header">
                       <div className="character-menu-sync-name">
@@ -698,6 +718,8 @@ export function AppShell({
               name="territories"
               state={background.resources.territories}
               retry={() => background.retryResource("territories")}
+              loadCampaignCopy={refreshTerritoryDataFromCampaign}
+              busy={territorySyncing || background.refreshing}
             >
               <TerritoriesView
                 actions={territoryActions}

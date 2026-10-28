@@ -572,7 +572,8 @@ export function useAppController() {
   const [loginOptionsError, setLoginOptionsError] = useState("");
   const [loginRetry, setLoginRetry] = useState(0);
   useEffect(() => {
-    if (!hasSheetsConnection() || authenticated) return;
+    // Only the legacy Sheets service requires a public player-name lookup.
+    if (apiBackend === "d1" || !hasSheetsConnection() || authenticated) return;
     let cancelled = false;
     setLoginOptionsStatus("loading");
     setLoginOptionsError("");

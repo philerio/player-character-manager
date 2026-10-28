@@ -37,24 +37,26 @@ export function PortraitViewer({
 }
 
 export function LoginScreen({
+  requiresPlayerSelection = false,
   optionsStatus = "ready",
   optionsError = "",
   onRetryOptions,
-  players,
+  players = [],
   onLogin,
   onRegister,
   onLoadRecoveryQuestion,
   onResetPassword,
 }: {
+  requiresPlayerSelection?: boolean;
   optionsStatus?: "idle" | "loading" | "ready" | "error";
   optionsError?: string;
   onRetryOptions?: () => void;
-  players: LoginOption[];
-  onLogin: (input: { playerId: string; email: string; password: string }) => Promise<void>;
+  players?: LoginOption[];
+  onLogin: (input: { playerId?: string; email: string; password: string }) => Promise<void>;
   onRegister: (input: { displayName: string; email: string; setupPassword: string }) => Promise<void>;
-  onLoadRecoveryQuestion: (input: { playerId: string; email: string }) => Promise<{ recoveryQuestion: string }>;
+  onLoadRecoveryQuestion: (input: { playerId?: string; email: string }) => Promise<{ recoveryQuestion: string }>;
   onResetPassword: (input: {
-    playerId: string;
+    playerId?: string;
     email: string;
     recoveryAnswer: string;
     newPassword: string;
@@ -76,21 +78,22 @@ export function LoginScreen({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!registering && (optionsStatus !== "ready" || !players.some(player => player.playerId === playerId))) { setError("Load player names and choose a player before continuing."); return; }
+    if (busy) return;
+    if (requiresPlayerSelection && !registering && (optionsStatus !== "ready" || !players.some(player => player.playerId === playerId))) { setError("Load player names and choose a player before continuing."); return; }
+    const account = { ...(requiresPlayerSelection ? { playerId } : {}), email: email.trim().toLowerCase() };
     setError("");
     setBusy(true);
     try {
       if (registering) {
-        await onRegister({ displayName, email, setupPassword: password });
+        await onRegister({ displayName: displayName.trim(), email: account.email, setupPassword: password });
       } else if (recovering && !recoveryQuestion) {
-        const result = await onLoadRecoveryQuestion({ playerId, email });
+        const result = await onLoadRecoveryQuestion(account);
         setRecoveryQuestion(result.recoveryQuestion);
       } else if (recovering) {
         if (password.length < 10) throw new Error("Use a password of at least 10 characters.");
         if (password !== confirmation) throw new Error("The passwords do not match.");
         await onResetPassword({
-          playerId,
-          email,
+          ...account,
           recoveryAnswer,
           newPassword: password,
         });
@@ -101,7 +104,7 @@ export function LoginScreen({
         setPassword("");
         setError("Password reset. You can now sign in.");
       } else {
-        await onLogin({ playerId, email, password });
+        await onLogin({ ...account, password });
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Sign-in failed.");
@@ -125,45 +128,45 @@ export function LoginScreen({
         {registering ? (
           <label>
             Display name
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
+            <input autoComplete="nickname" disabled={busy} value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
           </label>
-        ) : (
+        ) : requiresPlayerSelection ? (
           <label>
             Display name
-            <select disabled={optionsStatus !== "ready" || busy || !players.length} value={playerId} onChange={(event) => setPlayerId(event.target.value)} required>
+            <select disabled={optionsStatus !== "ready" || busy || !players.length || Boolean(recoveryQuestion)} value={playerId} onChange={(event) => setPlayerId(event.target.value)} required>
               <option value="">{optionsStatus === "loading" || optionsStatus === "idle" ? "Loading player names…" : optionsStatus === "error" ? "Player names unavailable" : !players.length ? "No players registered" : "Select your name"}</option>
               {players.map((player) => (
                 <option value={player.playerId} key={player.playerId}>{player.displayName}</option>
               ))}
             </select>
           </label>
-        )}
-        {!registering && optionsStatus === "error" && <div role="alert"><p>{optionsError}</p><button type="button" onClick={onRetryOptions}>Retry loading names</button></div>}
-        {!registering && optionsStatus === "loading" && <progress aria-label="Loading player names" />}
+        ) : null}
+        {requiresPlayerSelection && !registering && optionsStatus === "error" && <div role="alert"><p>{optionsError}</p><button type="button" disabled={busy} onClick={onRetryOptions}>Retry loading names</button></div>}
+        {requiresPlayerSelection && !registering && optionsStatus === "loading" && <progress aria-label="Loading player names" />}
         <label>
           Email
-          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
+          <input type="email" name="email" autoComplete="username" autoCapitalize="none" spellCheck={false} disabled={busy} readOnly={recovering && Boolean(recoveryQuestion)} value={email} onChange={(event) => setEmail(event.target.value)} required />
         </label>
         {recovering && recoveryQuestion && (
           <label>
             {recoveryQuestion}
-            <input value={recoveryAnswer} onChange={(event) => setRecoveryAnswer(event.target.value)} autoComplete="off" required />
+            <input disabled={busy} value={recoveryAnswer} onChange={(event) => setRecoveryAnswer(event.target.value)} autoComplete="off" required />
           </label>
         )}
         {(!recovering || recoveryQuestion) && (
           <label>
             {registering ? "Shared setup password" : recovering ? "New password" : "Password"}
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={recovering ? "new-password" : "current-password"} required />
+            <input type="password" name="password" disabled={busy} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={recovering ? "new-password" : "current-password"} required />
           </label>
         )}
         {recovering && recoveryQuestion && (
           <label>
             Confirm new password
-            <input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" required />
+            <input type="password" disabled={busy} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" required />
           </label>
         )}
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="primary-button" disabled={busy || (!registering && (optionsStatus !== "ready" || !players.some(player => player.playerId === playerId)))}>
+        <button className="primary-button" disabled={busy || (requiresPlayerSelection && !registering && (optionsStatus !== "ready" || !players.some(player => player.playerId === playerId)))}>
           {busy
             ? "Please wait…"
             : registering
@@ -178,6 +181,7 @@ export function LoginScreen({
           <button
             className="auth-switch-button"
             type="button"
+            disabled={busy}
             onClick={() => {
               setRecovering(true);
               setError("");
@@ -190,6 +194,7 @@ export function LoginScreen({
         <button
           className="auth-switch-button"
           type="button"
+          disabled={busy}
           onClick={() => {
             if (recovering) {
               setRecovering(false);

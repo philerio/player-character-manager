@@ -1,6 +1,39 @@
 # Workbook import validation
 
-## Cleaned import copy: 2026-10-19
+## Latest production export: Player Character Manager20261019.xlsx
+
+Use the new private SQL file `migration-output/d1-production-import-20261019.sql` for the fresh production database. It was generated from `playerData/Player Character Manager20261019.xlsx`, not the older export below. The cleaned import copy is `playerData/Player Character Manager20261019 - D1 import.xlsx`. The original fresh export remains unchanged.
+
+The latest workbook has the same 46 orphan rows referring to the same nine missing character IDs as the previous cleanup: 19 recurring expenses and 27 wallet transactions. None match a character after ignoring case, whitespace and punctuation; the nearest valid IDs require 23–26 single-character edits. No character ownership was inferred or reassigned. The cleaned copy excludes those rows, with their full values and original Excel row locations preserved privately in `migration-output/workbook-cleanup-20261019-latest.json`.
+
+All retained row values were compared with the fresh source after writing and reopening the cleaned workbook. Validation passes with zero errors. The generated SQL was imported into a disposable SQLite database with all six migrations, including D1 file storage; integrity and foreign-key checks passed. Live counts were verified:
+
+| Data                | Imported rows |
+| ------------------- | ------------: |
+| Players             |             5 |
+| Characters          |            12 |
+| Territories         |             5 |
+| Territory hexes     |           305 |
+| Scouting missions   |           155 |
+| Recruitment offers  |            40 |
+| Retainers           |            19 |
+| Wallet transactions |           136 |
+| Recurring expenses  |            30 |
+| Journal entries     |             2 |
+| Wallet snapshots    |             1 |
+
+The two source Wallet Backups rows form one complete snapshot. The 22 source sessions are intentionally excluded; users sign in again. All 721 retained non-session source rows are also preserved in the private migration archive. Account recovery hashes remain included in private account data. Source/workbook/SQL hashes and the validation results are saved in `migration-output/d1-production-import-20261019-validation.json`.
+
+Import from the repository root, only after checking that `DB` targets the intended **empty** database:
+
+```bash
+npx wrangler d1 migrations apply DB --remote
+npx wrangler d1 execute DB --remote --file migration-output/d1-production-import-20261019.sql
+```
+
+Do not run the local test seed or import this over a populated campaign. No hosted database or Google Sheet was modified while preparing these files. The workbook, SQL, validation results and recovery archive remain gitignored; generated files have owner-only permissions.
+
+## Earlier import copy: 2026-10-19
 
 Use `playerData/Player Character Manager - D1 import.xlsx` for the D1 import. The original `playerData/Player Character Manager.xlsx` is unchanged.
 

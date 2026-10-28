@@ -4,15 +4,17 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-10-14",
   "workers_dev": true,
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": {
+    "crons": ["* * * * *"],
+  },
   "vars": {
     "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,https://player-character-manager.canterburysocietyinfo.workers.dev",
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "player-dashboard-db",
-      "database_id": "9ac40f83-1308-422b-850e-fcc8dc341c1b",
+      "database_name": "player-character-manager-db-fresh-20261019",
+      "database_id": "dbdbd521-56c6-4a22-a004-f8a121a0bdba",
       "migrations_dir": "worker/migrations",
     },
   ],

@@ -4,12 +4,31 @@ A React/TypeScript app for campaign wallets, journals, hirelings, fighting force
 territories, and scouting. Live campaign data comes from an external Google Apps
 Script service; working copies and wallet ledgers persist in the browser.
 
+## App version
+
+The sidebar shows the app version beneath the campaign name; on mobile it
+appears beneath the character name in the header. Version numbering starts at
+**v1.2.0** for the current D1 release. The display reads `version` from
+`package.json`; keep the root versions in `package-lock.json` in sync when releasing.
+
+- First number: major app or UI overhaul.
+- Middle number: database release or significant database change.
+- Last number: bug fixes and enhancements within that release.
+
+This is the app release version, not the count of applied D1 migration files.
+
+See [Version history](CHANGELOG.md) for each version's changes, validation, and
+deployment requirements. Update that history whenever preparing an app update;
+[repository instructions](AGENTS.md) preserve this workflow for future work.
+
 ## Cloudflare D1 migration
 
 A local/staging D1 backend is available. Production still defaults to Google Sheets.
 See [migration setup, supported operations, and cutover requirements](docs/d1-migration.md)
 and [the supplied workbook validation report](docs/d1-import-validation.md).
 Wallet backup/restore and explicit wallet file transfer are implemented; the migration guide includes the transfer steps. See [hosted staging setup](docs/d1-deployment.md) to connect the frontend to a Worker and remote D1 database.
+
+Create a verified full-database backup with `npm run d1:backup -- --remote` (or `--local`). See [backup and recovery](docs/d1-recovery.md) for private storage, verification and a restore rehearsal. The live D1 DM character dropdown includes **Backend status** for migrations, scheduled jobs, notifications and upload storage.
 
 ## Run locally
 

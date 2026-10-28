@@ -1,7 +1,7 @@
 {
   "name": "player-character-manager",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.2.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,7 +19,10 @@
     "d1:import": "node scripts/import-workbook.mjs",
     "d1:typecheck": "tsc --noEmit -p worker/tsconfig.json && tsc --noEmit -p worker/tsconfig.tests.json",
     "d1:test": "vitest run --config vitest.worker.config.ts --pool=threads --maxWorkers=1",
-    "d1:seed:local": "node scripts/seed-d1.mjs && wrangler d1 execute DB --local --file migration-output/local-seed.sql"
+    "d1:seed:local": "node scripts/seed-d1.mjs && wrangler d1 execute DB --local --file migration-output/local-seed.sql",
+    "d1:backup": "node scripts/d1-backup.mjs create",
+    "d1:backup:verify": "node scripts/d1-backup.mjs verify",
+    "d1:backup:test": "node scripts/d1-backup.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

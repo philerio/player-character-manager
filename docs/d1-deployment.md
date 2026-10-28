@@ -6,6 +6,14 @@ The backend now covers the existing app operations listed in [the migration guid
 
 ## Updating an already imported D1 installation
 
+For the **v1.2.2 email-only sign-in update**, deploy the API first with
+`npx wrangler deploy --keep-vars`, then rebuild and deploy the D1 frontend using
+the UI commands below. This change adds no database migration and does not
+require another workbook import. Existing accounts, passwords and sessions stay
+valid. The API still accepts older requests containing a player ID, so the
+previous UI continues to work during deployment. The legacy Google Sheets
+frontend keeps its existing name selection because that service requires it.
+
 Do **not** rerun the campaign SQL import or reset the database. After testing these changes in staging, use the account/database already configured in `wrangler.jsonc`:
 
 ```bash
@@ -105,17 +113,17 @@ Apply all migration files, including `0004_game_operations.sql`, `0005_account_c
 
 ## 4. Import validated data once
 
-Use the cleaned workbook `playerData/Player Character Manager - D1 import.xlsx`. On 2026-10-19, at the user's request, 46 orphan wallet records were excluded after checking for character-ID typos; the original and a private recovery archive are preserved. See [the validation report](d1-import-validation.md). Validate the copy:
+Use the cleaned latest export `playerData/Player Character Manager20261019 - D1 import.xlsx`. Its prepared SQL is `migration-output/d1-production-import-20261019.sql`. The 46 orphan wallet records were excluded after checking for character-ID typos; the fresh original and a private recovery archive are preserved. See [the validation report](d1-import-validation.md). Validate the copy:
 
 ```bash
-npm run d1:import -- "playerData/Player Character Manager - D1 import.xlsx"
+npm run d1:import -- "playerData/Player Character Manager20261019 - D1 import.xlsx"
 ```
 
 After validation succeeds, generate a private SQL file:
 
 ```bash
 mkdir -p migration-output
-npm run d1:import -- "playerData/Player Character Manager - D1 import.xlsx" --output migration-output/staging-import.sql
+npm run d1:import -- "playerData/Player Character Manager20261019 - D1 import.xlsx" --output migration-output/staging-import.sql
 ```
 
 Test that import in a separate disposable local database first, following [the migration guide](d1-migration.md). Only after it passes should you import into the **empty remote staging destination**:
@@ -154,6 +162,31 @@ The health response confirms that the Worker is reachable. It does not query D1:
 
 ## 6. Point a frontend preview at that API
 
+### Existing Workers frontend
+
+The UI at `https://player-character-manager.canterburysocietyinfo.workers.dev` is a separate Worker named `player-character-manager`. `wrangler.ui.jsonc` deploys its static `dist` assets; `wrangler.jsonc` deploys only the API. Use the same Cloudflare account that owns the existing frontend and API. If Wrangler lists multiple accounts, select the owner account or set `CLOUDFLARE_ACCOUNT_ID` to its actual ID.
+
+First copy the deployed API URL from `npx wrangler deploy`. Save the following values in a local, gitignored `.env.production.local`, using that actual URL:
+
+```dotenv
+VITE_API_BACKEND=d1
+VITE_API_URL=PASTE_THE_DEPLOYED_API_URL_HERE
+VITE_DEMO_MODE=false
+```
+
+Replace the entire URL placeholder before building. The API URL must be the API Worker, not the UI URL or `localhost`. Confirm `API_URL/?action=health` responds with the Player Character Manager D1 service before publishing the UI.
+
+```bash
+npm run build
+npx wrangler deploy --config wrangler.ui.jsonc
+```
+
+This updates the existing UI Worker in the selected account. No D1 binding, import or migration belongs in the UI configuration. The API's `ALLOWED_ORIGINS` already includes this UI origin; redeploy the API if changing that list. After deployment, open the UI without demo query parameters and sign in again.
+
+For Git-connected Workers Builds, use build command `npm run build`, deploy command `npx wrangler deploy --config wrangler.ui.jsonc`, and the same three build-time variables below. Set Node to version 24. The local `.env.production.local` is not uploaded to Git; set those variables separately in the Cloudflare build environment. The API project must keep its own deploy command.
+
+### Build environment
+
 In the Cloudflare project or CI job that **builds the staging frontend**, set:
 
 ```dotenv
@@ -187,3 +220,11 @@ References: [D1 setup and bindings](https://developers.cloudflare.com/d1/get-sta
 Uploads use D1 only. Each file is limited to 5 MiB and split into small base64 parts to fit D1 row limits. Metadata, content and campaign references save in one transaction; reads verify the saved content hash. Replacing a file, deleting a portrait or deleting a territory removes its D1 file content in the same transaction. Existing Drive links remain supported without copying files.
 
 The application caps file content at 128 MiB of encoded data (roughly 96 MiB of original files). Base64 adds approximately one third to file size; table and index storage add overhead too. This cap leaves room for campaign records within D1 Free's 500 MB per-database limit, but it does not reserve space or enforce the whole database's size. Monitor database usage and daily quotas in Cloudflare. When the upload cap is reached, the API rejects new files with an actionable message while preserving the current file. The Free plan has daily read/write limits; it is suitable while the campaign fits those limits, not unlimited storage or traffic. See [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
+
+## Backups and DM backend status
+
+Before deploying an update, use `npm run d1:backup -- --remote` to export and verify the current database. See [full campaign backup and recovery](d1-recovery.md) for verification, private storage and a restore rehearsal into a separate empty database. Apply the existing migrations first if the database predates file storage; the verifier requires that schema. Browser-only wallets and external Drive files need separate exports.
+
+In a live D1 frontend, open the DM character dropdown, then **Backend status**. It loads on demand and shows schema/migration checks, the last completed and successful scheduled runs, notification queue/configuration failures and the encoded-file storage budget. Refresh failures retain the last checked result with an explicit warning. Before the first Cron run, job status is unknown rather than healthy. The public health endpoint remains a reachability check; the detailed endpoint requires a DM session. This view does not check whole-database backups or Cloudflare account quotas.
+
+The Worker stores scheduler status in the existing settings table; no new migration is required for these diagnostics. Notification delivery during a scheduled run is bounded to two messages to leave query headroom for campaign processing.

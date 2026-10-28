@@ -1,3 +1,4 @@
+import { isBackendStatus } from "../../shared/backendStatus";
 import {
   RecordFieldError,
   validateRecordFields,
@@ -250,6 +251,8 @@ export function validateResponse(
       count(value, `revisions.${tab}`);
     }
   }
+  if (action === "backend.status" && !isBackendStatus(data))
+    invalid("backend.status", "valid backend status", data);
   validateActionResult(action, data, requestedCharacterId, request);
 }
 // Validate the data each API method promises before callers change local state.
@@ -432,6 +435,14 @@ function validateActionResult(
         request.playerId,
         "currentPlayer" + ".playerId",
       );
+      if (request.playerId === undefined && typeof request.email === "string") {
+        text(data.currentPlayer.email, "currentPlayer.email");
+        match(
+          data.currentPlayer.email.trim().toLowerCase(),
+          request.email.trim().toLowerCase(),
+          "currentPlayer.email",
+        );
+      }
     }
   } else if (action === "auth.password.change") {
     text(data.sessionToken, "sessionToken");

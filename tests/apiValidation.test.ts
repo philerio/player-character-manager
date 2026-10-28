@@ -231,6 +231,31 @@ it("validates both login branches and the signed-in player", async () => {
     ),
   ).rejects.toMatchObject({ code: "validation" });
 });
+it("checks the returned account email when no player ID was selected", async () => {
+  const response = {
+    ok: true,
+    mustChangePassword: false,
+    sessionToken: "token",
+    currentPlayer: { ...data.currentPlayer, email: "player@example.test" },
+  };
+  expect(
+    (await request("auth.login", { email: " PLAYER@EXAMPLE.TEST " }, response))
+      .ok,
+  ).toBe(true);
+  await expect(
+    request("auth.login", { email: "other@example.test" }, response),
+  ).rejects.toMatchObject({ code: "validation" });
+  await expect(
+    request(
+      "auth.login",
+      { email: "player@example.test" },
+      {
+        ...response,
+        currentPlayer: data.currentPlayer,
+      },
+    ),
+  ).rejects.toMatchObject({ code: "validation" });
+});
 it("does not save a session from an incomplete password-change response", async () => {
   vi.stubEnv("VITE_DEMO_MODE", "false");
   vi.stubEnv("VITE_APPS_SCRIPT_URL", "https://campaign.example.test/");

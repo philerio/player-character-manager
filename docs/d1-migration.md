@@ -40,7 +40,7 @@ In another terminal:
 npm run dev:d1
 ```
 
-Select `Test dm`, `Test player`, or `Test other` at sign-in. Their emails are `dm@example.test`, `player@example.test`, and `other@example.test`; all use `local-test-password`. These are synthetic accounts only. Use the regular sign-in screen; the existing `?demo=dm` and `?demo=player` query parameters still select the separate browser demo.
+Sign in with `dm@example.test`, `player@example.test`, or `other@example.test`; all use `local-test-password`. D1 sign-in and password recovery identify accounts by email and do not load or require a player-name dropdown. These are synthetic accounts only. Use the regular sign-in screen; the existing `?demo=dm` and `?demo=player` query parameters still select the separate browser demo.
 
 The seed includes a Test Territory with bundled player and detail maps. If an older local seed has no **View Map** button, repair just that synthetic record without resetting the database:
 
@@ -57,6 +57,8 @@ For a clean, disposable local emulator after experimentation, stop the Worker, r
 Wrangler stores local D1 state in `.wrangler/`, which is gitignored. In a restricted environment, set `XDG_CONFIG_HOME` to a writable directory and `WRANGLER_SEND_METRICS=false`. Running the emulator requires permission to bind a loopback port.
 
 ## Validate/import a workbook
+
+The latest validated production export is `playerData/Player Character Manager20261019 - D1 import.xlsx`; its prepared SQL is `migration-output/d1-production-import-20261019.sql`. See [the latest validation report](d1-import-validation.md) for the 46 archived orphan rows and verified import counts. The older export and cleanup described below are retained for history.
 
 Validation only; this does not generate files or connect to Cloudflare:
 
@@ -77,6 +79,10 @@ npx wrangler d1 execute DB --local --file migration-output/import.sql
 The output includes password hashes, archived recovery metadata and potentially webhook credentials. Keep it private; `migration-output/` is gitignored and output files are created with owner-only permissions. Do not upload it as a public frontend asset. All original source sheets except Sessions are retained in `migration_archive` for later ports, including wallet backups and recruitment offers. Recruitment offers also import into live records. Migration 0004 promotes offers from older archives, and 0005 restores archived recovery hashes to private account records. The Worker never exposes the archive. Valid Wallet Backups rows also become snapshots available through **Restore Backup**. Incomplete snapshot groups, invalid payloads, duplicate row IDs or ordering, and any generated SQL statements (including records, settings and archived source rows) that exceed the D1 import statement limit block generation with a sheet/row/field diagnostic. The API uses bound JSON and an 8 MiB request limit (uploads decode to at most 5 MiB); oversized import snapshots need an explicit transfer plan rather than silently dropping them.
 
 Importing is a one-time seed, not an upsert into a running campaign. Do not assume a large Wrangler SQL import is atomic. If a command fails, recreate the disposable destination, apply the schema, and rerun; never retry against a partially populated production database. Before remote import, verify row counts and all supported API response shapes on the corrected export locally, then repeat in an isolated staging database.
+
+## Backup and service diagnostics
+
+Use [full campaign backup and recovery](d1-recovery.md) to create verified private exports and rehearse a restore. The DM character dropdown has an on-demand **Backend status** view for migration readiness, scheduled jobs, Discord queue status and upload storage. Job heartbeats use existing settings; no new schema migration is required.
 
 ## Deployment and acceptance work
 

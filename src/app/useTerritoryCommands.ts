@@ -48,6 +48,7 @@ type CommandContext = Pick<
   | "gold"
   | "silver"
   | "copper"
+  | "background"
 >;
 
 export function useTerritoryCommands(controller: CommandContext) {
@@ -92,25 +93,64 @@ export function useTerritoryCommands(controller: CommandContext) {
       }
     }
     if (!territoryDraftDirty) setTerritories(data.territories || []);
+    if (selectedCharacterIdRef.current === selectedCharacter.characterId)
+      // Paid development/recruitment writes advance the D1 territory revision.
+      // Confirm it now so the player's next edit isn't mistaken for a conflict.
+      await controller.background.retryResource("territories");
   };
 
   const onFieldAllocationSaved: TerritoryProps["onFieldAllocationSaved"] = (
     updatedHex,
+    source = "local",
   ) => {
     const {
       selectedCharacter,
       territoryHexes,
       queueTerritoryOperation,
       persistLocalTerritoryState,
+      selectedCharacterIdRef,
     } = controller;
 
-    if (!selectedCharacter) return;
-    const previous = territoryHexes.find(
-      (hex) => hex.hexId === updatedHex.hexId,
-    );
-    const nextHexes = territoryHexes.map((hex) =>
-      hex.hexId === updatedHex.hexId ? updatedHex : hex,
-    );
+    if (
+      !selectedCharacter ||
+      selectedCharacterIdRef.current !== selectedCharacter.characterId ||
+      updatedHex.characterId !== selectedCharacter.characterId
+    )
+      return;
+    // A development response contains multiple hexes. Read the latest draft
+    // between callbacks so the second response cannot undo the first one.
+    const draft = loadTerritoryDraft(selectedCharacter.characterId);
+    const currentHexes = draft?.territoryHexes ?? territoryHexes;
+    const previous = currentHexes.find((hex) => hex.hexId === updatedHex.hexId);
+    let nextHex = { ...previous, ...updatedHex };
+    if (source === "campaign") {
+      // These fields were already saved by the paid action. Keep any newer
+      // local edits without queuing a second write for the server response.
+      for (const operation of draft?.operations || []) {
+        if (operation.kind === "fields" && operation.hexId === nextHex.hexId)
+          nextHex = {
+            ...nextHex,
+            cerealFields: operation.cerealFields,
+            cottonFields: operation.cottonFields,
+            pastureFields: operation.pastureFields,
+          };
+        else if (
+          operation.kind === "hex" &&
+          operation.localHexId === nextHex.hexId
+        )
+          nextHex = {
+            ...nextHex,
+            mapX: operation.mapX,
+            mapY: operation.mapY,
+            title: operation.title ?? nextHex.title,
+            contents: operation.contents ?? nextHex.contents,
+            dmRevealed: operation.dmRevealed ?? nextHex.dmRevealed,
+          };
+      }
+    }
+    const nextHexes = previous
+      ? currentHexes.map((hex) => (hex.hexId === nextHex.hexId ? nextHex : hex))
+      : [...currentHexes, nextHex];
     const fieldsChanged =
       previous &&
       (Number(previous.cerealFields || 0) !==
@@ -119,7 +159,7 @@ export function useTerritoryCommands(controller: CommandContext) {
           Number(updatedHex.cottonFields || 0) ||
         Number(previous.pastureFields || 0) !==
           Number(updatedHex.pastureFields || 0));
-    if (fieldsChanged) {
+    if (source === "local" && fieldsChanged) {
       queueTerritoryOperation(
         {
           id: crypto.randomUUID(),

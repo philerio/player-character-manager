@@ -100,7 +100,7 @@ export function TerritoriesView({
   characterId: string;
   balances: CoinBalances;
   onRecruitmentComplete: (transaction?: SheetTransaction, schedule?: SheetRecurringExpense) => Promise<void>;
-  onFieldAllocationSaved: (hex: SheetTerritoryHex) => void;
+  onFieldAllocationSaved: (hex: SheetTerritoryHex, source?: "local" | "campaign") => void;
   onTitheChanged: (territory: SheetTerritory) => void;
   hasUnsyncedChanges: boolean;
   syncing: boolean;
@@ -358,7 +358,7 @@ function TerritoryManagementPanel({ actions, mode, territory, character, charact
   balances: CoinBalances;
   isDm: boolean;
   territoryHexes: SheetTerritoryHex[];
-  onFieldAllocationSaved: (hex: SheetTerritoryHex) => void;
+  onFieldAllocationSaved: (hex: SheetTerritoryHex, source?: "local" | "campaign") => void;
   onClose: () => void;
   onSaved: (territory: SheetTerritory) => void;
   onRecruitmentComplete: (transaction?: SheetTransaction, schedule?: SheetRecurringExpense) => Promise<void>;
@@ -555,7 +555,7 @@ function TerritoryManagementPanel({ actions, mode, territory, character, charact
   }
 
   async function expandSettlementFields(hex: SheetTerritoryHex) {
-    if (hasUnsyncedChanges) { setError("Press Sync with Sheet before beginning a paid development project."); return; }
+    if (hasUnsyncedChanges) { setError("Wait for pending territory changes to finish syncing before beginning a paid development project. Resolve any campaign update shown on the Territories page first."); return; }
     const activeFields = Number(hex.cerealFields || 0) + Number(hex.cottonFields || 0) + Number(hex.pastureFields || 0);
     const fieldCapacity = Math.max(activeFields, Number(hex.fieldCapacity || 0));
     const fieldsToDevelop = Math.max(0, 8 - fieldCapacity);
@@ -570,14 +570,14 @@ function TerritoryManagementPanel({ actions, mode, territory, character, charact
       const result = await actions.startSettlementFieldExpansion({
         characterId, territoryId: territory.territoryId, hexId: hex.hexId, walletBalance: balances,
       });
-      onFieldAllocationSaved(result.hex);
+      onFieldAllocationSaved(result.hex, "campaign");
       await onRecruitmentComplete(result.transaction);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not begin settlement field development."); }
     finally { setExpandingHexId(""); }
   }
 
   async function developPlains() {
-    if (hasUnsyncedChanges) { setError("Press Sync with Sheet before beginning a paid development project."); return; }
+    if (hasUnsyncedChanges) { setError("Wait for pending territory changes to finish syncing before beginning a paid development project. Resolve any campaign update shown on the Territories page first."); return; }
     if (!developingPlainsHexId || !developmentSettlementHexId) { setError("Choose an available plains sub-hex and a known settlement."); return; }
     const plainsHex = availablePlainsHexes.find((hex) => hex.hexId === developingPlainsHexId);
     const settlementHex = knownSettlements.find((hex) => hex.hexId === developmentSettlementHexId);
@@ -594,8 +594,8 @@ function TerritoryManagementPanel({ actions, mode, territory, character, charact
         characterId, territoryId: territory.territoryId, plainsHexId: developingPlainsHexId,
         settlementHexId: developmentSettlementHexId, walletBalance: balances,
       });
-      onFieldAllocationSaved(result.plainsHex);
-      onFieldAllocationSaved(result.settlementHex);
+      onFieldAllocationSaved(result.plainsHex, "campaign");
+      onFieldAllocationSaved(result.settlementHex, "campaign");
       setDevelopingPlainsHexId(""); setDevelopmentSettlementHexId("");
       await onRecruitmentComplete(result.transaction);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not begin farmland development."); }

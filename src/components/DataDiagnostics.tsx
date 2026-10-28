@@ -30,8 +30,8 @@ export function DataDiagnostics({ characterId }: { characterId: string }) {
       ) : (
         <>
           <p>
-            Invalid responses were rejected. Use record IDs to locate
-            spreadsheet rows; positions refer to the returned data.
+            Invalid responses were rejected. Use record IDs to locate campaign
+            records; positions refer to the returned data.
           </p>
           <ol>
             {issues.map((issue) => (

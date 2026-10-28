@@ -876,7 +876,7 @@ export async function loadLoginOptions() {
 }
 
 export async function login(input: {
-  playerId: string;
+  playerId?: string;
   email: string;
   password: string;
 }) {
@@ -925,7 +925,7 @@ export async function changeInitialPassword(input: {
 }
 
 export async function loadRecoveryQuestion(input: {
-  playerId: string;
+  playerId?: string;
   email: string;
 }) {
   return postSheetAction<{ ok: true; recoveryQuestion: string }>(
@@ -935,7 +935,7 @@ export async function loadRecoveryQuestion(input: {
 }
 
 export async function resetForgottenPassword(input: {
-  playerId: string;
+  playerId?: string;
   email: string;
   recoveryAnswer: string;
   newPassword: string;
@@ -1720,4 +1720,20 @@ export async function deleteJournalEntry(input: {
     "journal.delete",
     input,
   );
+}
+
+export async function loadBackendStatus(): Promise<
+  import("../shared/backendStatus").BackendStatus
+> {
+  if (apiBackend !== "d1" || isDemoMode)
+    throw new Error("Backend status is available for live D1 campaigns.");
+  const url = new URL(SCRIPT_URL);
+  url.searchParams.set("action", "backend.status");
+  url.searchParams.set("sessionToken", getSessionToken());
+  url.searchParams.set("_", String(Date.now()));
+  const response = await requestSheet(url.toString(), {
+    method: "GET",
+    cache: "no-store",
+  });
+  return response.json();
 }

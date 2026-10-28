@@ -31,6 +31,7 @@ import {
 import { loadRetainerDraft } from "./retainerStorage";
 import {
   loadTerritoryDraft,
+  clearTerritoryDraft,
   saveTerritoryDraft,
   mergePublishedTerritoryReveals,
 } from "./territoryStorage";
@@ -48,6 +49,7 @@ export type ResourceState = {
   hasData: boolean;
   error: string;
   updatedAt: string;
+  conflict?: boolean;
 };
 export type Resources = Record<ResourceName, ResourceState>;
 const blank = (): ResourceState => ({
@@ -132,7 +134,10 @@ export function useBackgroundSync(
       };
       const next = {
         ...previous,
-        [id]: { ...current, [name]: { ...current[name], ...patch } },
+        [id]: {
+          ...current,
+          [name]: { ...current[name], conflict: false, ...patch },
+        },
       };
       stateRef.current = next;
       return next;
@@ -315,8 +320,12 @@ export function useBackgroundSync(
                   }
                 }
                 const message =
-                  "The DM published a newer campaign copy. Your local edits are preserved. Review it before choosing to refresh and replace your edits.";
-                update(id, name, { status: "error", error: message });
+                  "Campaign data changed while this device had pending edits. Your local edits are preserved. Download your working copy before loading the campaign copy, which replaces those pending edits.";
+                update(id, name, {
+                  status: "error",
+                  error: message,
+                  conflict: true,
+                });
                 failures.push(message);
                 return;
               }
@@ -378,7 +387,7 @@ export function useBackgroundSync(
                     ? await loadJournalData(id)
                     : name === "retainers"
                       ? await loadRetainerData(id)
-                      : await loadTerritoryStatus(id);
+                      : await loadTerritoryStatus(id, force);
                 if (!current()) return;
                 const draftAfter = JSON.stringify(
                   name === "retainers"
@@ -409,6 +418,9 @@ export function useBackgroundSync(
                   const territory = result as Awaited<
                     ReturnType<typeof loadTerritoryStatus>
                   >;
+                  // The unchanged draft has no pending operations. Its old
+                  // snapshot must not shadow the newly loaded campaign data.
+                  clearTerritoryDraft(id);
                   live.setTerritories(territory.territories);
                   live.setScoutingMissions(territory.scoutingMissions);
                   live.setCustomMissions(territory.customMissions || []);
@@ -442,8 +454,11 @@ export function useBackgroundSync(
                   live.cacheBaseRef.current = next;
                   saveCachedSheetData(next);
                 }
-                accepted[name] = revisions[name];
-                saveAcceptedTabSyncRevisions(id, accepted);
+                const latestAccepted = loadAcceptedTabSyncRevisions(id);
+                saveAcceptedTabSyncRevisions(id, {
+                  ...latestAccepted,
+                  [name]: Math.max(latestAccepted[name], revisions[name]),
+                });
                 update(id, name, {
                   status: "ready",
                   hasData: true,

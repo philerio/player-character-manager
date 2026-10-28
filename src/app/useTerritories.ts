@@ -15,11 +15,16 @@ import type { AppModal } from "./core";
 import { hasSheetsConnection } from "../google-sheets-api";
 import { migrateExistingScoutingTimers } from "./territoryStorage";
 import { appStorage } from "./storage";
+import {
+  loadAcceptedTabSyncRevisions,
+  saveAcceptedTabSyncRevisions,
+} from "./syncStorage";
 
 import { useEffect, useRef, useState } from "react";
 import {
   saveCachedSheetData,
   loadTerritoryStatus,
+  loadTabSyncRevisions,
   saveTerritory,
   updateTerritory,
   updateTerritoryChurchTithe,
@@ -599,6 +604,8 @@ export function useTerritories(
 
       // This read is intentionally the authoritative completion point. It also
       // adjudicates any scouting mission whose real-world timer has expired.
+      const revisions = await loadTabSyncRevisions(characterId);
+      assertScope();
       const data = await loadTerritoryStatus(characterId, true);
       assertScope();
       const missing: string[] = [];
@@ -635,6 +642,10 @@ export function useTerritories(
           customMissions: data.customMissions || [],
         });
       clearTerritoryDraft(characterId);
+      saveAcceptedTabSyncRevisions(characterId, {
+        ...loadAcceptedTabSyncRevisions(characterId),
+        territories: revisions.territories,
+      });
       reconcileLocalScoutingTimersWithAuthoritative(
         characterId,
         data.scoutingMissions || [],
@@ -671,8 +682,9 @@ export function useTerritories(
     if (!selectedCharacter) return;
     const characterId = selectedCharacter.characterId;
     const generation = getContext().characterLoadRequestRef?.current;
+    const scope = getDraftScope();
     if (
-      territoryDraftDirty &&
+      Boolean(loadTerritoryDraft(characterId)?.operations.length) &&
       !window.confirm(
         "Refresh Player Data will discard the unsynced territory/scouting changes on this device. Continue?",
       )
@@ -683,8 +695,12 @@ export function useTerritories(
     setTerritorySyncing(true);
     setTerritorySyncError("");
     try {
-      const data = await loadTerritoryStatus(characterId);
+      // Read the revision first: acknowledge only campaign changes included
+      // in the fresh snapshot, never a revision published after that read.
+      const revisions = await loadTabSyncRevisions(characterId);
+      const data = await loadTerritoryStatus(characterId, true);
       if (
+        getDraftScope() !== scope ||
         selectedCharacterIdRef.current !== characterId ||
         getContext().characterLoadRequestRef?.current !== generation
       )
@@ -710,6 +726,10 @@ export function useTerritories(
         scoutingMissions: data.scoutingMissions || [],
         customMissions: data.customMissions || [],
         territoryHexes: data.territoryHexes || [],
+      });
+      saveAcceptedTabSyncRevisions(characterId, {
+        ...loadAcceptedTabSyncRevisions(characterId),
+        territories: revisions.territories,
       });
 
       // DM refresh also picks up player-created recruits unless the DM has

@@ -57,13 +57,19 @@ export async function deliverNotifications(
   db: D1Database,
   send: typeof fetch = fetch,
   onlyId?: string,
+  limit = 5,
 ) {
   const now = new Date().toISOString();
   const pending = await db
     .prepare(
-      `SELECT id FROM notification_outbox WHERE status='pending' AND next_attempt_at<=? AND (lease_until IS NULL OR lease_until<=?) ${onlyId ? "AND id=?" : ""} ORDER BY created_at LIMIT 5`,
+      `SELECT id FROM notification_outbox WHERE status='pending' AND next_attempt_at<=? AND (lease_until IS NULL OR lease_until<=?) ${onlyId ? "AND id=?" : ""} ORDER BY created_at LIMIT ?`,
     )
-    .bind(now, now, ...(onlyId ? [onlyId] : []))
+    .bind(
+      now,
+      now,
+      ...(onlyId ? [onlyId] : []),
+      Math.min(5, Math.max(1, limit)),
+    )
     .all<{ id: string }>();
   for (const item of pending.results) {
     const lease = new Date(Date.now() + 60000).toISOString();

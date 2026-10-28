@@ -11,11 +11,15 @@ export function ResourceFeedback({
   name,
   state,
   retry,
+  loadCampaignCopy,
+  busy = false,
   children,
 }: {
   name: string;
   state: ResourceState;
   retry: () => Promise<void>;
+  loadCampaignCopy?: () => Promise<void>;
+  busy?: boolean;
   children: React.ReactNode;
 }) {
   if (!state.hasData)
@@ -56,11 +60,31 @@ export function ResourceFeedback({
       {state.status === "error" && (
         <div className="data-error-note" role="alert">
           <span>{state.error} Your working copy is still available.</span>
+          {state.conflict && loadCampaignCopy && (
+            <>
+              <button
+                className="secondary-action"
+                onClick={downloadWorkingCopy}
+              >
+                Download working copy
+              </button>
+              <button
+                className="secondary-action"
+                disabled={busy}
+                onClick={() => void loadCampaignCopy().catch(() => {})}
+              >
+                {busy ? "Loading campaign copy…" : "Load campaign copy"}
+              </button>
+            </>
+          )}
           <button
             className="secondary-action"
+            disabled={busy}
             onClick={() => void retry().catch(() => {})}
           >
-            Retry {name}
+            {state.conflict && loadCampaignCopy
+              ? "Check again"
+              : `Retry ${name}`}
           </button>
         </div>
       )}

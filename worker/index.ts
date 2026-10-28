@@ -15,6 +15,7 @@ import { adminAction, adminActions } from "./admin";
 import { mediaAction, mediaActions, serveMedia } from "./media";
 import { deliverNotifications, queueJournal } from "./notifications";
 import { runScheduled } from "./scheduled";
+import { backendStatus } from "./backendStatus";
 /** Campaign API and uploaded file storage backed by D1. */
 export interface Env {
   DB: D1Database;
@@ -146,12 +147,16 @@ async function account(db: D1Database, player: Player) {
     characters: characters.map((row) => publicCharacter(row, dm)),
   };
 }
-async function authenticated(db: D1Database, token: unknown) {
+async function authenticated(
+  db: D1Database,
+  token: unknown,
+  includeWebhook = true,
+) {
   if (typeof token !== "string" || token.length > 200 || !token)
     throw new ApiError(401, "Session expired.");
   const player = await db
     .prepare(
-      "SELECT p.*,EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=p.id) AS webhook_configured FROM players p JOIN sessions s ON s.player_id = p.id WHERE s.token_hash = ? AND s.expires_at > ? AND p.active = 1",
+      `SELECT p.*,${includeWebhook ? "EXISTS(SELECT 1 FROM discord_webhooks w WHERE w.player_id=p.id)" : "0"} AS webhook_configured FROM players p JOIN sessions s ON s.player_id = p.id WHERE s.token_hash = ? AND s.expires_at > ? AND p.active = 1`,
     )
     .bind(await digest(token), new Date().toISOString())
     .first<Player>();
@@ -325,7 +330,7 @@ async function revision(db: D1Database, char: string) {
   return result;
 }
 async function login(db: D1Database, input: Data, ip: string) {
-  const id = required(input.playerId);
+  const id = input.playerId === undefined ? null : required(input.playerId);
   const email = required(input.email, 254).toLowerCase();
   if (
     typeof input.password !== "string" ||
@@ -336,7 +341,8 @@ async function login(db: D1Database, input: Data, ip: string) {
   const password = input.password;
   const now = new Date().toISOString();
   // Persist throttling across Worker instances. Never store the raw address or credentials.
-  const key = await digest(ip + ":" + id);
+  // Old and new clients share the same normalized account throttle bucket.
+  const key = await digest("login:" + ip + ":" + email);
   const attempt = await db
     .prepare(
       `INSERT INTO login_attempts(key, attempts, expires_at) VALUES (?, 1, ?)
@@ -356,9 +362,9 @@ async function login(db: D1Database, input: Data, ip: string) {
     );
   const player = await db
     .prepare(
-      "SELECT * FROM players WHERE id = ? AND email = ? COLLATE NOCASE AND active = 1",
+      "SELECT * FROM players WHERE email = ? COLLATE NOCASE AND active = 1 AND (? IS NULL OR id = ?)",
     )
-    .bind(id, email)
+    .bind(email, id, id)
     .first<Player>();
   if (
     !player ||
@@ -368,7 +374,7 @@ async function login(db: D1Database, input: Data, ip: string) {
       player.password_hash,
     ))
   )
-    throw new ApiError(400, "Incorrect account, email, or password.");
+    throw new ApiError(400, "Incorrect email or password.");
   if (JSON.parse(player.data).mustChangePassword)
     return createPasswordChallenge(db, player);
   // Upgrade imported hashes after a successful login without invalidating an
@@ -895,7 +901,15 @@ async function dispatch(request: Request, env: Env, input: Data) {
     }
     return result;
   }
-  const player = await authenticated(db, input.sessionToken);
+  const player = await authenticated(
+    db,
+    input.sessionToken,
+    action !== "backend.status",
+  );
+  if (read && action === "backend.status") {
+    requireDm(player);
+    return backendStatus(db);
+  }
   if (!read && adminActions.has(action)) {
     const result = await adminAction(db, input, action, player);
     if (result.playerRow)
@@ -1092,6 +1106,7 @@ const knownActions = new Set([
   ...mediaActions,
   "journal.discord.send",
   "health",
+  "backend.status",
   "auth.options",
   "auth.login",
   "auth.logout",

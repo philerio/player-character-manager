@@ -11,7 +11,12 @@ const actions = () => ({
 it("does not present login options or submit a login before names finish loading", () => {
   const props = actions();
   const { container } = render(
-    <LoginScreen players={[]} optionsStatus="loading" {...props} />,
+    <LoginScreen
+      requiresPlayerSelection
+      players={[]}
+      optionsStatus="loading"
+      {...props}
+    />,
   );
   expect(
     screen.getByRole<HTMLSelectElement>("combobox", { hidden: true }).disabled,
@@ -24,6 +29,7 @@ it("shows a recoverable dropdown error instead of claiming that no players exist
   const retry = vi.fn();
   render(
     <LoginScreen
+      requiresPlayerSelection
       players={[]}
       optionsStatus="error"
       optionsError="Campaign unavailable"

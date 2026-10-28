@@ -107,7 +107,6 @@ async function call(
 }
 async function signin(id = "player") {
   const result = await call("auth.login", {
-    playerId: id,
     email: `${id}@example.test`,
     password: "local-test-password",
   });
@@ -117,6 +116,72 @@ async function signin(id = "player") {
   );
   return result.data.sessionToken as string;
 }
+it("identifies active accounts by normalized email and keeps legacy account checks", async () => {
+  const result = await call("auth.login", {
+    email: "  PLAYER@EXAMPLE.TEST ",
+    password: "local-test-password",
+  });
+  expect(result.status).toBe(200);
+  expect(result.data.currentPlayer.playerId).toBe("player");
+  expect(
+    result.data.characters.every((row: any) => row.playerId === "player"),
+  ).toBe(true);
+  const invalid = [];
+  for (const input of [
+    { email: "missing@example.test", password: "local-test-password" },
+    { email: "player@example.test", password: "wrong" },
+    {
+      playerId: "other",
+      email: "player@example.test",
+      password: "local-test-password",
+    },
+  ])
+    invalid.push(await call("auth.login", input));
+  sqlite.prepare("UPDATE players SET active=0 WHERE id='other'").run();
+  invalid.push(
+    await call("auth.login", {
+      email: "other@example.test",
+      password: "local-test-password",
+    }),
+  );
+  for (const failure of invalid) {
+    expect(failure.status).toBe(400);
+    expect(failure.data.error).toBe("Incorrect email or password.");
+    expect(failure.data.sessionToken).toBeUndefined();
+  }
+  expect(
+    (
+      await call("auth.login", {
+        playerId: "player",
+        email: "player@example.test",
+        password: "local-test-password",
+      })
+    ).status,
+  ).toBe(200);
+});
+it("shares throttling across normalized emails and old or new login requests", async () => {
+  for (let index = 0; index < 10; index++)
+    expect(
+      (
+        await call("auth.login", {
+          ...(index % 2 ? { playerId: `different-id-${index}` } : {}),
+          email: index % 2 ? "  PLAYER@EXAMPLE.TEST " : "player@example.test",
+          password: "wrong",
+        })
+      ).status,
+    ).toBe(400);
+  expect(
+    (
+      await call("auth.login", {
+        email: "player@example.test",
+        password: "local-test-password",
+      })
+    ).status,
+  ).toBe(429);
+  const buckets = sqlite.prepare("SELECT key FROM login_attempts").all();
+  expect(buckets).toHaveLength(1);
+  expect(JSON.stringify(buckets)).not.toContain("player@example.test");
+});
 it("signs in existing sheet accounts and serves frontend-valid bootstrap/rosters/statuses", async () => {
   const sessionToken = await signin();
   for (const action of [
@@ -1442,6 +1507,13 @@ it("migrates registration, one-time password setup and recovery with session rev
     setupPassword: "synthetic-setup-key",
   });
   expect(registered.status, JSON.stringify(registered.data)).toBe(200);
+  const initialLogin = await call("auth.login", {
+    email: "NEW@EXAMPLE.TEST",
+    password: "synthetic-setup-key",
+  });
+  expect(initialLogin.status).toBe(200);
+  expect(initialLogin.data.mustChangePassword).toBe(true);
+  expect(initialLogin.data.passwordChangeToken).toBeTruthy();
   const changed = await call("auth.password.change", {
     passwordChangeToken: registered.data.passwordChangeToken,
     newPassword: "new-secret-password",
@@ -1460,6 +1532,13 @@ it("migrates registration, one-time password setup and recovery with session rev
   expect(
     (
       await call("auth.recovery.question", {
+        email: "  NEW@EXAMPLE.TEST ",
+      })
+    ).data.recoveryQuestion,
+  ).toBe("What is the test word?");
+  expect(
+    (
+      await call("auth.recovery.question", {
         playerId,
         email: "new@example.test",
       })
@@ -1467,8 +1546,25 @@ it("migrates registration, one-time password setup and recovery with session rev
   ).toBe("What is the test word?");
   expect(
     (
+      await call("auth.recovery.question", {
+        email: "missing@example.test",
+      })
+    ).status,
+  ).toBe(400);
+  // A stale or tampered legacy selection must never reset a different account.
+  expect(
+    (
       await call("auth.recovery.reset", {
-        playerId,
+        playerId: "other",
+        email: "new@example.test",
+        recoveryAnswer: "test answer",
+        newPassword: "blocked-password",
+      })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await call("auth.recovery.reset", {
         email: "new@example.test",
         recoveryAnswer: "wrong",
         newPassword: "replacement-password",
@@ -1478,8 +1574,7 @@ it("migrates registration, one-time password setup and recovery with session rev
   expect(
     (
       await call("auth.recovery.reset", {
-        playerId,
-        email: "new@example.test",
+        email: " NEW@EXAMPLE.TEST ",
         recoveryAnswer: "  TEST answer ",
         newPassword: "replacement-password",
       })
@@ -1495,7 +1590,6 @@ it("migrates registration, one-time password setup and recovery with session rev
     ).status,
   ).toBe(401);
   const loggedIn = await call("auth.login", {
-    playerId,
     email: "new@example.test",
     password: "replacement-password",
   });
@@ -2194,4 +2288,110 @@ it("enforces the upload budget while allowing replacements and frees deleted ter
   expect(sqlite.prepare("SELECT id FROM media_files").all()).toEqual([
     { id: "quota-fixture" },
   ]);
+});
+
+it("restricts backend status to the DM and reports missing migrations without requiring those tables for authentication", async () => {
+  const dm = await signin("dm"),
+    player = await signin();
+  expect(
+    (await call("backend.status", { sessionToken: player }, true)).status,
+  ).toBe(403);
+  const status = await call("backend.status", { sessionToken: dm }, true);
+  expect(status.status).toBe(200);
+  expect(status.data.schema.ready).toBe(true);
+  expect(status.data.schema.appliedMigrations).toBeNull();
+  expect(status.data.scheduler.outcome).toBeNull();
+  expect(status.data.storage.encodedBytes).toBe(0);
+  expect(JSON.stringify(status.data)).not.toMatch(
+    /passwordHash|sessionToken|webhookUrl|local-test-password/,
+  );
+  sqlite.exec("DROP TABLE discord_webhooks");
+  const missing = await call("backend.status", { sessionToken: dm }, true);
+  expect(missing.status).toBe(200);
+  expect(missing.data.schema.ready).toBe(false);
+  expect(missing.data.schema.missing).toContain("discord_webhooks");
+  expect(missing.data.storage).toBeNull();
+});
+
+it("reports pending migration history and accurate notification and upload counts", async () => {
+  const sessionToken = await signin("dm");
+  sqlite.exec(
+    "CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY,name TEXT); INSERT INTO d1_migrations VALUES(1,'0001_initial.sql')",
+  );
+  const pending = await call("backend.status", { sessionToken }, true);
+  expect(pending.data.schema.ready).toBe(false);
+  expect(pending.data.schema.pendingMigrations).toContain(
+    "0006_d1_file_storage.sql",
+  );
+  sqlite.exec("DROP TABLE d1_migrations");
+  const now = new Date().toISOString();
+  for (const state of ["pending", "pending", "failed", "blocked", "sent"])
+    sqlite
+      .prepare(
+        "INSERT INTO notification_outbox(id,character_id,event,data,status,next_attempt_at,created_at) VALUES(?,'player-character','journal','{}',?,?,?)",
+      )
+      .run(crypto.randomUUID(), state, now, now);
+  const result = await call("backend.status", { sessionToken }, true);
+  expect(result.data.notifications).toEqual({
+    pending: 2,
+    failed: 1,
+    blocked: 1,
+    oldestPendingAt: now,
+  });
+});
+
+it("persists successful and partial scheduled runs for DM diagnostics", async () => {
+  const sessionToken = await signin("dm");
+  const { runScheduled } = await import("../scheduled");
+  await runScheduled(env.DB);
+  const good = await call("backend.status", { sessionToken }, true);
+  expect(good.data.scheduler.outcome).toBe("ok");
+  expect(good.data.scheduler.lastSucceededAt).toBeTruthy();
+  sqlite.exec(
+    "UPDATE settings SET value='' WHERE key='jobCursor'; UPDATE records SET data='{}' WHERE kind='hex'",
+  );
+  // Force a domain failure for the next character without breaking heartbeat storage.
+  sqlite.exec(
+    "CREATE TRIGGER synthetic_clock_failure BEFORE INSERT ON transaction_guards BEGIN SELECT RAISE(ABORT,'synthetic scheduled failure'); END",
+  );
+  await runScheduled(env.DB);
+  const failed = await call("backend.status", { sessionToken }, true);
+  expect(failed.data.scheduler.outcome).toBe("partial");
+  expect(failed.data.scheduler.failureCount).toBe(1);
+  expect(failed.data.scheduler.lastSucceededAt).toBe(
+    good.data.scheduler.lastSucceededAt,
+  );
+  expect(failed.data.scheduler.lastFailureCharacterId).toBeTruthy();
+  expect(failed.data.scheduler.lastFinishedAt).toBeTruthy();
+});
+
+it("bounds scheduled notification work within the Free query budget", async () => {
+  const now = new Date().toISOString();
+  sqlite.exec(
+    "INSERT INTO discord_webhooks VALUES('player','https://discord.com/api/webhooks/123456789012345678/synthetic-test-token')",
+  );
+  sqlite.exec(
+    "UPDATE characters SET data=json_set(data,'$.discordThreadId','123456789012345679') WHERE id='player-character'",
+  );
+  for (let i = 0; i < 10; i++)
+    sqlite
+      .prepare(
+        "INSERT INTO notification_outbox(id,character_id,event,data,next_attempt_at,created_at) VALUES(?,'player-character','journal','{}',?,?)",
+      )
+      .run("notice-" + i, now, now);
+  const send = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(Response.json({ id: "synthetic" }));
+  const { runScheduled } = await import("../scheduled");
+  queryCount = 0;
+  await runScheduled(env.DB);
+  expect(queryCount).toBeLessThanOrEqual(50);
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(
+    sqlite
+      .prepare(
+        "SELECT count(*) AS n FROM notification_outbox WHERE status='sent'",
+      )
+      .get()!.n,
+  ).toBe(2);
 });

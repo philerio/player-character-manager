@@ -169,7 +169,7 @@ export async function accountAction(
       )
         throw new ApiError(
           409,
-          "That email is already registered. Select the account and sign in, or use password recovery.",
+          "That email is already registered. Sign in with that email or use password recovery.",
         );
       throw error;
     }
@@ -231,13 +231,14 @@ export async function accountAction(
     ]);
     return { ok: true, sessionToken, playerId: challenge.player_id };
   }
-  const id = text(input.playerId, 1, 120),
+  const requestedId =
+      input.playerId === undefined ? null : text(input.playerId, 1, 120).trim(),
     email = text(input.email, 3, 254).trim().toLowerCase();
   const player = await db
     .prepare(
-      "SELECT * FROM players WHERE id=? AND email=? COLLATE NOCASE AND active=1",
+      "SELECT * FROM players WHERE email=? COLLATE NOCASE AND active=1 AND (? IS NULL OR id=?)",
     )
-    .bind(id, email)
+    .bind(email, requestedId, requestedId)
     .first<Row>();
   const data = player ? JSON.parse(player.data) : {};
   if (action === "auth.recovery.question") {
@@ -264,7 +265,8 @@ export async function accountAction(
         400,
         "The account information or recovery answer is incorrect.",
       );
-    const salt = token(),
+    const id = player.id,
+      salt = token(),
       hash = await passwordHash(newPassword, salt),
       guard = token();
     data.mustChangePassword = false;

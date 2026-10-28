@@ -161,6 +161,17 @@ button {
   text-transform: inherit;
 }
 
+.app-version {
+  color: #bda57d;
+  font: 11px/1.4 Arial, sans-serif;
+  letter-spacing: .04em;
+  text-transform: none;
+}
+
+.mobile-app-version {
+  display: none;
+}
+
 .campaign-name.editable {
   cursor: pointer;
 }
@@ -264,6 +275,10 @@ button {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+.character-title {
+  min-width: 0;
 }
 
 .edit-character-button {
@@ -3658,6 +3673,12 @@ button {
   }
   .character-button {
     font-size: 20px;
+  }
+  .mobile-app-version {
+    display: block;
+    margin-top: -4px;
+    padding-left: 2px;
+    color: var(--muted);
   }
   .character-menu {
     top: 54px;
