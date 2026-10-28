@@ -22,7 +22,11 @@
     "d1:seed:local": "node scripts/seed-d1.mjs && wrangler d1 execute DB --local --file migration-output/local-seed.sql",
     "d1:backup": "node scripts/d1-backup.mjs create",
     "d1:backup:verify": "node scripts/d1-backup.mjs verify",
-    "d1:backup:test": "node scripts/d1-backup.test.mjs"
+    "d1:backup:test": "node scripts/d1-backup.test.mjs",
+    "deploy:check": "node scripts/check-deploy-git.mjs",
+    "deploy:ui": "node scripts/deploy.mjs ui",
+    "deploy:api": "node scripts/deploy.mjs api",
+    "deploy:test": "node --test scripts/check-deploy-git.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

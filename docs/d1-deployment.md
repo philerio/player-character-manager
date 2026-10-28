@@ -4,10 +4,18 @@ Deploy a separate staging API and database first. The frontend calls the Worker 
 
 The backend now covers the existing app operations listed in [the migration guide](d1-migration.md). Evaluate it in a separate frontend project or preview environment until DM/player acceptance checks pass. New files are stored in D1; no R2 subscription or bucket is required. Registration uses optional Worker secrets; scheduled processing uses the configured Cron trigger.
 
+## Mandatory Git prerequisite
+
+Commit all release changes before any Cloudflare deployment. Use `npm run deploy:ui`
+and `npm run deploy:api`; they refuse staged, unstaged, and untracked files. The UI
+command rebuilds assets and checks the same commit again before publishing. Never
+use direct Wrangler/MCP/dashboard uploads to bypass the rule. Private environment
+files and credentials remain gitignored. See [repository memory](../MEMORY.md).
+
 ## Updating an already imported D1 installation
 
 For the **v1.2.2 email-only sign-in update**, deploy the API first with
-`npx wrangler deploy --keep-vars`, then rebuild and deploy the D1 frontend using
+`npm run deploy:api`, then rebuild and deploy the D1 frontend using
 the UI commands below. This change adds no database migration and does not
 require another workbook import. Existing accounts, passwords and sessions stay
 valid. The API still accepts older requests containing a player ID, so the
@@ -38,7 +46,7 @@ npx wrangler d1 execute DB --remote --command "INSERT INTO settings(key,value) V
 Deploy the Worker, which also installs its one-minute Cron schedule, and rebuild/redeploy the frontend with `VITE_API_BACKEND=d1`, its Worker API URL and demo mode disabled:
 
 ```bash
-npx wrangler deploy
+npm run deploy:api
 ```
 
 Then test scouting result viewing and player visibility, recruitment, field development, uploads, account recovery and wallet backup/restore. Re-enter Discord webhooks through the DM UI; existing script-property credentials are not automatically transferred. Existing Drive links remain supported. No hosted resources are changed merely by updating the repository.
@@ -141,7 +149,7 @@ Without imported accounts, the API can answer health checks but nobody can sign 
 Apply all D1 migrations first. Configure registration secrets only if new account registration should be enabled.
 
 ```bash
-npx wrangler deploy
+npm run deploy:api
 ```
 
 Wrangler prints the deployed API URL, typically:
@@ -166,7 +174,7 @@ The health response confirms that the Worker is reachable. It does not query D1:
 
 The UI at `https://player-character-manager.canterburysocietyinfo.workers.dev` is a separate Worker named `player-character-manager`. `wrangler.ui.jsonc` deploys its static `dist` assets; `wrangler.jsonc` deploys only the API. Use the same Cloudflare account that owns the existing frontend and API. If Wrangler lists multiple accounts, select the owner account or set `CLOUDFLARE_ACCOUNT_ID` to its actual ID.
 
-First copy the deployed API URL from `npx wrangler deploy`. Save the following values in a local, gitignored `.env.production.local`, using that actual URL:
+First copy the deployed API URL from `npm run deploy:api`. Save the following values in a local, gitignored `.env.production.local`, using that actual URL:
 
 ```dotenv
 VITE_API_BACKEND=d1
@@ -177,13 +185,12 @@ VITE_DEMO_MODE=false
 Replace the entire URL placeholder before building. The API URL must be the API Worker, not the UI URL or `localhost`. Confirm `API_URL/?action=health` responds with the Player Character Manager D1 service before publishing the UI.
 
 ```bash
-npm run build
-npx wrangler deploy --config wrangler.ui.jsonc
+npm run deploy:ui
 ```
 
 This updates the existing UI Worker in the selected account. No D1 binding, import or migration belongs in the UI configuration. The API's `ALLOWED_ORIGINS` already includes this UI origin; redeploy the API if changing that list. After deployment, open the UI without demo query parameters and sign in again.
 
-For Git-connected Workers Builds, use build command `npm run build`, deploy command `npx wrangler deploy --config wrangler.ui.jsonc`, and the same three build-time variables below. Set Node to version 24. The local `.env.production.local` is not uploaded to Git; set those variables separately in the Cloudflare build environment. The API project must keep its own deploy command.
+For Git-connected Workers Builds, use deploy command `npm run deploy:ui` (it includes the build), and the same three build-time variables below. Set Node to version 24. The local `.env.production.local` is not uploaded to Git; set those variables separately in the Cloudflare build environment. The API project must keep its own deploy command.
 
 ### Build environment
 

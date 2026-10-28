@@ -21,6 +21,16 @@ See [Version history](CHANGELOG.md) for each version's changes, validation, and
 deployment requirements. Update that history whenever preparing an app update;
 [repository instructions](AGENTS.md) preserve this workflow for future work.
 
+## Cloudflare deployment rule
+
+Commit all release changes before publishing to Cloudflare. Use `npm run deploy:ui`
+or `npm run deploy:api`; both refuse staged, unstaged, or untracked changes. The
+UI command builds fresh assets and verifies the checkout again before publishing.
+Keep private environment files gitignored. Do not bypass the guard with direct
+Wrangler, MCP, or dashboard uploads. See [repository memory](MEMORY.md) and
+[deployment instructions](docs/d1-deployment.md). These guards enforce the supported
+commands; Cloudflare itself cannot prevent a separate manual upload.
+
 ## Cloudflare D1 migration
 
 A local/staging D1 backend is available. Production still defaults to Google Sheets.

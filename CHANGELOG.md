@@ -19,6 +19,17 @@ can be recorded under **Unreleased** without changing the displayed app version.
 
 ## Unreleased
 
+- Added repository memory and a mandatory clean, committed Git checkout rule for
+  Cloudflare releases, with guarded UI/API deployment commands. UI deployment
+  rebuilds the committed source and verifies Git again before publishing.
+  TypeScript build caches now write to the ignored dependency cache so a build
+  does not dirty tracked cache files. This workflow update does not change the
+  app version or database schema.
+- Deployment workflow validation: six Git guard tests, both deployment entry
+  points refusing the uncommitted checkout before build/upload, TypeScript checks,
+  JavaScript syntax checks, and formatting checks passed. No Cloudflare deployment
+  was performed.
+
 - Added this version history and repository instructions for maintaining it with
   future updates.
 
