@@ -27,3 +27,15 @@ A commit and a remote push are distinct; report their status accurately.
   and CHANGELOG.md for commit/deployment status. Version 1.2.2 belongs to email-only
   login. Do not replay the old stash or its deployment configuration.
 - After code edits, run formatting and appropriate static checks/tests.
+
+## Loading feedback preference — 2026-10-30
+
+Keep the character-name dropdown stable during routine background checks and
+automatic saves. Show progress for initial loading and explicit refreshes/pushes;
+retain pending changes, offline status, storage failures, and actionable errors.
+Do not present reconnect checks as user-requested progress. See CHANGELOG.md for
+release and validation details; a local change is not a confirmed deployment.
+
+The user requested that the related quiet-dropdown follow-up remain in v1.2.4,
+rather than become v1.2.5. Keep its package/UI version and changelog grouped with
+that release; distinguish the deployed timer fix from the pending dropdown update.

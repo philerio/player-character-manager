@@ -224,12 +224,14 @@ export function AppShell({
     journalSyncing ||
     profileSyncing;
   const characterVisiblyBusy =
+    profileSyncing ||
+    Boolean(dmTabPushing) ||
     background.foregroundRefreshing ||
-    (rosterRefreshing && !background.refreshing) ||
-    retainerSyncing ||
-    territorySyncing ||
-    journalSyncing ||
-    profileSyncing;
+    (!background.refreshing &&
+      (rosterRefreshing ||
+        retainerSyncing ||
+        territorySyncing ||
+        journalSyncing));
   const characterError =
     background.error ||
     retainerSyncError ||
@@ -247,11 +249,14 @@ export function AppShell({
     <WorkflowStatus
       compact
       confirmed={Object.values(background.resources).every(
-        (state) => state.status === "ready",
+        (state) =>
+          state.status === "ready" ||
+          (state.status === "loading" && state.hasData),
       )}
       online={background.online}
-      busy={characterBusy}
-      phase={background.phase}
+      busy={characterBusy || Boolean(dmTabPushing)}
+      showProgress={characterVisiblyBusy}
+      phase={dmTabPushing ? "Publishing campaign changes…" : background.phase}
       error={characterError}
       pending={retainerDraftDirty || territoryDraftDirty || journalDraftDirty}
       dm={permissions.isDm && !dmOwnsSelectedCharacter}
@@ -659,7 +664,7 @@ export function AppShell({
                   ? "Demo data"
                   : !background.online
                     ? "Offline · Local copy"
-                    : background.foregroundRefreshing
+                    : background.refreshing && characterVisiblyBusy
                       ? "Refreshing campaign…"
                       : background.error
                         ? "Campaign unavailable"

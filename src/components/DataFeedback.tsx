@@ -116,6 +116,7 @@ export function WorkflowStatus({
   confirmed,
   online,
   busy,
+  showProgress = busy,
   phase,
   error,
   pending,
@@ -127,6 +128,7 @@ export function WorkflowStatus({
   confirmed: boolean;
   online: boolean;
   busy: boolean;
+  showProgress?: boolean;
   phase: string;
   error: string;
   pending: boolean;
@@ -140,11 +142,12 @@ export function WorkflowStatus({
     window.addEventListener("pcm-storage-status", update);
     return () => window.removeEventListener("pcm-storage-status", update);
   }, []);
+  const visiblyBusy = busy && showProgress;
   return (
     <aside
       className={`workflow-status ${compact ? "is-compact" : ""} ${error ? "has-error" : ""}`}
       aria-label="Data and save status"
-      aria-busy={busy}
+      aria-busy={visiblyBusy}
     >
       <div role={error ? "alert" : "status"} aria-live="polite">
         <strong>
@@ -154,7 +157,7 @@ export function WorkflowStatus({
               ? "Offline · Showing saved data"
               : error
                 ? "Action needed"
-                : busy
+                : visiblyBusy
                   ? phase || "Synchronizing…"
                   : pending
                     ? dm
@@ -164,7 +167,7 @@ export function WorkflowStatus({
                       ? "Campaign changes confirmed"
                       : "Showing saved working copy"}
         </strong>
-        {busy && (
+        {visiblyBusy && (
           <progress
             aria-label={progress?.label || phase || "Refreshing campaign data"}
             {...(progress && progress.total > 0
@@ -172,7 +175,7 @@ export function WorkflowStatus({
               : {})}
           />
         )}
-        {progress && busy && <span>{progress.label}</span>}
+        {progress && visiblyBusy && <span>{progress.label}</span>}
         {error && <p>{error}</p>}
         {!online && (
           <p>

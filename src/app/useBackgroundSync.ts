@@ -148,10 +148,12 @@ export function useBackgroundSync(
   const run = useCallback(
     async ({
       force = false,
+      interactive = false,
       flush = true,
       only,
     }: {
       force?: boolean;
+      interactive?: boolean;
       flush?: boolean;
       only?: ResourceName;
     } = {}): Promise<void> => {
@@ -161,7 +163,7 @@ export function useBackgroundSync(
       if (lock.current) {
         await lock.current;
         if (ctx.selectedCharacterIdRef.current !== id) return;
-        return run({ force, flush, only });
+        return run({ force, interactive, flush, only });
       }
       const requestGeneration = generation.current,
         selection = ctx.characterLoadRequestRef.current;
@@ -187,7 +189,7 @@ export function useBackgroundSync(
         if (current()) {
           setRefreshing(true);
           setForegroundRefreshing(
-            force ||
+            interactive ||
               names.some((name) => !stateRef.current[id]?.[name]?.hasData),
           );
           setError("");
@@ -676,7 +678,8 @@ export function useBackgroundSync(
     progress,
     error:
       error || names.map((name) => resources[name].error).find(Boolean) || "",
-    refreshNow: () => run({ force: true }),
-    retryResource: (only: ResourceName) => run({ force: true, only }),
+    refreshNow: () => run({ force: true, interactive: true }),
+    retryResource: (only: ResourceName) =>
+      run({ force: true, interactive: true, only }),
   };
 }

@@ -41,16 +41,27 @@ can be recorded under **Unreleased** without changing the displayed app version.
   player's character. Those drafts remain local until an explicit Push to Sheet.
 - Keep ordinary background reads, explicit DM pushes, and automatic saves for
   player-owned and DM-owned characters. Wallet storage and backups are unchanged.
-- Desktop and mobile version labels now read v1.2.4 from the package version.
+
+### Stable dropdown status during background work
+
+- Hide dropdown loading bars, changing refresh labels, and busy announcements for
+  routine background reads and automatic saves. Pending, offline, storage-failure,
+  and error feedback remain available; refresh stays disabled while work is active.
+- Keep progress for initial loading and explicitly requested refreshes or pushes.
+  Automatic saves also stay quiet beside the character name.
+- At the user's request, these related refresh fixes share v1.2.4. Desktop and
+  mobile version labels continue reading that version from package.json.
 
 **Deployment:** Rebuild/deploy the UI from a clean committed checkout. No API
-update, database migration, or workbook import is required. Prepared locally;
-not confirmed deployed.
+update, database migration, or workbook import is required. The DM timer fix in
+commit fac000c was deployed on 2026-10-30; the dropdown changes are prepared locally
+and have not yet been deployed.
 
-**Validation:** All 166 frontend tests passed, including DM pending-draft timer,
-background-read, explicit-push, and DM-owned automatic-save regressions. TypeScript
-checks, production build, and formatting checks passed. Build reports a chunk-size
-advisory; no lint script is configured.
+**Validation:** All 167 frontend tests passed, including DM draft scheduling,
+explicit pushes, automatic saves, slow background refresh, manual refresh, pending,
+offline, and error feedback coverage. TypeScript checks, production build, and
+formatting checks passed. Build reports a chunk-size advisory; no lint script is
+configured.
 
 ## v1.2.3 — 2026-10-28
 

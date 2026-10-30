@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { LoginScreen } from "../src/components/AccountViews";
-import { ResourceFeedback } from "../src/components/DataFeedback";
+import {
+  ResourceFeedback,
+  WorkflowStatus,
+} from "../src/components/DataFeedback";
 const actions = () => ({
   onLogin: vi.fn(async () => {}),
   onRegister: vi.fn(async () => {}),
@@ -89,4 +92,43 @@ it("keeps cached content usable when its background refresh fails", () => {
     screen.getByRole("button", { hidden: true, name: "Retry territories" }),
   );
   expect(retry).toHaveBeenCalledOnce();
+});
+
+it("keeps background save status quiet while retaining pending, offline, error, and explicit-action feedback", () => {
+  const props = {
+    confirmed: true,
+    online: true,
+    busy: true,
+    showProgress: false,
+    phase: "Sending pending journal changes…",
+    error: "",
+    pending: true,
+    dm: true,
+    progress: { completed: 0, total: 1, label: "Saving journal" },
+    refresh: vi.fn(async () => {}),
+  };
+  const { rerender } = render(<WorkflowStatus {...props} />);
+  expect(screen.queryByRole("progressbar", { hidden: true })).toBeNull();
+  expect(
+    screen.getByText("Saved locally · DM changes await Push to Sheet"),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole<HTMLButtonElement>("button", {
+      hidden: true,
+      name: "Refresh now",
+    }).disabled,
+  ).toBe(true);
+  expect(
+    screen
+      .getByRole("complementary", { hidden: true })
+      .getAttribute("aria-busy"),
+  ).toBe("false");
+  rerender(<WorkflowStatus {...props} online={false} />);
+  expect(screen.getByText("Offline · Showing saved data")).toBeTruthy();
+  rerender(<WorkflowStatus {...props} error="Campaign unavailable" />);
+  expect(screen.getByText("Action needed")).toBeTruthy();
+  expect(screen.getByText("Campaign unavailable")).toBeTruthy();
+  rerender(<WorkflowStatus {...props} showProgress />);
+  expect(screen.getByRole("progressbar", { hidden: true })).toBeTruthy();
+  expect(screen.getByText("Sending pending journal changes…")).toBeTruthy();
 });

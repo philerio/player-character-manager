@@ -173,7 +173,12 @@ it("keeps automatic checks quiet beside the character name but shows manual refr
   const read = vi
     .spyOn(api, "loadTabSyncRevisions")
     .mockReturnValue(revisions.promise);
-  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+  const journalRefresh =
+    deferred<Awaited<ReturnType<typeof api.loadJournalData>>>();
+  const journalRead = vi
+    .spyOn(api, "loadJournalData")
+    .mockReturnValueOnce(journalRefresh.promise);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 121_000);
   fireEvent.focus(window);
   await waitFor(() => expect(read).toHaveBeenCalled());
   expect(
@@ -191,8 +196,21 @@ it("keeps automatic checks quiet beside the character name but shows manual refr
       }).disabled,
     ).toBe(true),
   );
+  expect(within(menu).queryByRole("progressbar", { hidden: true })).toBeNull();
+  expect(within(menu).getByText("Campaign changes confirmed")).toBeTruthy();
+  expect(within(menu).queryByText("Checking campaign updates…")).toBeNull();
   await act(async () =>
     revisions.resolve({ wallet: 0, journal: 0, retainers: 0, territories: 0 }),
+  );
+  await waitFor(() => expect(journalRead).toHaveBeenCalled());
+  expect(within(menu).queryByRole("progressbar", { hidden: true })).toBeNull();
+  expect(within(menu).getByText("Campaign changes confirmed")).toBeTruthy();
+  await act(async () =>
+    journalRefresh.resolve({
+      ok: true,
+      characterId: fixture.selectedCharacterId,
+      journal: fixture.journal,
+    }),
   );
   const refresh = within(
     menu.querySelector<HTMLElement>(".workflow-status")!,
@@ -210,6 +228,7 @@ it("keeps automatic checks quiet beside the character name but shows manual refr
       within(selector).getByRole("progressbar", { hidden: true }),
     ).toBeTruthy(),
   );
+  expect(within(menu).getByRole("progressbar", { hidden: true })).toBeTruthy();
   await act(async () =>
     manual.resolve({ wallet: 0, journal: 0, retainers: 0, territories: 0 }),
   );
