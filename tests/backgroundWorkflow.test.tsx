@@ -118,3 +118,82 @@ it("ignores a late read even after switching A to B and back to A", async () => 
     "Newest notes",
   );
 }, 30_000);
+
+async function dmController() {
+  window.history.replaceState({}, "", "/?demo=dm");
+  vi.resetModules();
+  const { useAppController: useDmController } =
+    await import("../src/app/useAppController");
+  const dmApi = await import("../src/google-sheets-api");
+  const storage = await import("../src/app/journalStorage");
+  const { result } = renderHook(() => useDmController());
+  await ready(result);
+  expect(result.current.currentPlayer?.role).toBe("dm");
+  return { result, dmApi, storage };
+}
+it("does not poll every debounce period for DM drafts on another player's character, but keeps reads and explicit pushes working", async () => {
+  const { result, dmApi, storage } = await dmController();
+  expect(result.current.dmOwnsSelectedCharacter).toBe(false);
+  const read = vi.spyOn(dmApi, "loadTabSyncRevisions");
+  const create = vi.spyOn(dmApi, "saveJournalEntry");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  await act(() =>
+    result.current.saveCampaignJournalEntry({
+      title: "DM working note",
+      tags: [],
+      notes: "Publish explicitly",
+    }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(read).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+  expect(storage.loadJournalDraft("demo-character")?.operations).toHaveLength(
+    1,
+  );
+  expect(result.current.background.refreshing).toBe(false);
+  vi.useRealTimers();
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+  act(() => window.dispatchEvent(new Event("focus")));
+  await waitFor(() => expect(read).toHaveBeenCalled());
+  await waitFor(() => expect(result.current.background.refreshing).toBe(false));
+  expect(create).not.toHaveBeenCalled();
+  expect(storage.loadJournalDraft("demo-character")?.operations).toHaveLength(
+    1,
+  );
+  await act(() => result.current.pushDmTabToSheet("journal"));
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(storage.loadJournalDraft("demo-character")).toBeNull();
+  expect(result.current.dmTabPushSuccess).toBe("journal");
+}, 30_000);
+it("continues automatically saving journal changes for a DM-owned character", async () => {
+  const { result, dmApi, storage } = await dmController();
+  await act(() =>
+    result.current.createCharacter({
+      playerName: "Demo DM",
+      targetPlayerId: "demo-dm",
+      name: "DM adventurer",
+      className: "Fighter",
+      level: 1,
+    }),
+  );
+  await ready(result);
+  expect(result.current.dmOwnsSelectedCharacter).toBe(true);
+  const id = result.current.selectedCharacterId;
+  const create = vi.spyOn(dmApi, "saveJournalEntry");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  await act(() =>
+    result.current.saveCampaignJournalEntry({
+      title: "My character note",
+      tags: [],
+      notes: "Automatic save",
+    }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2500);
+  });
+  vi.useRealTimers();
+  await waitFor(() => expect(storage.loadJournalDraft(id)).toBeNull());
+  expect(create).toHaveBeenCalledTimes(1);
+}, 30_000);

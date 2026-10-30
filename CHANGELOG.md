@@ -33,6 +33,25 @@ can be recorded under **Unreleased** without changing the displayed app version.
 - Added this version history and repository instructions for maintaining it with
   future updates.
 
+## v1.2.4 — 2026-10-30
+
+### Stop repeated checks for pending DM drafts
+
+- Do not start the 2.5-second automatic-save timer for a DM viewing another
+  player's character. Those drafts remain local until an explicit Push to Sheet.
+- Keep ordinary background reads, explicit DM pushes, and automatic saves for
+  player-owned and DM-owned characters. Wallet storage and backups are unchanged.
+- Desktop and mobile version labels now read v1.2.4 from the package version.
+
+**Deployment:** Rebuild/deploy the UI from a clean committed checkout. No API
+update, database migration, or workbook import is required. Prepared locally;
+not confirmed deployed.
+
+**Validation:** All 166 frontend tests passed, including DM pending-draft timer,
+background-read, explicit-push, and DM-owned automatic-save regressions. TypeScript
+checks, production build, and formatting checks passed. Build reports a chunk-size
+advisory; no lint script is configured.
+
 ## v1.2.3 — 2026-10-28
 
 ### Quiet automatic refresh

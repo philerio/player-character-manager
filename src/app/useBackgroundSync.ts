@@ -93,12 +93,14 @@ export function useBackgroundSync(
   {
     characterId,
     authenticated,
+    autoSyncAllowed,
     retainerDirty,
     territoryDirty,
     journalDirty,
   }: {
     characterId: string;
     authenticated: boolean;
+    autoSyncAllowed: boolean;
     retainerDirty: boolean;
     territoryDirty: boolean;
     journalDirty: boolean;
@@ -599,6 +601,7 @@ export function useBackgroundSync(
     if (
       !characterId ||
       !authenticated ||
+      !autoSyncAllowed ||
       refreshing ||
       error ||
       (!retainerDirty && !territoryDirty && !journalDirty)
@@ -611,6 +614,7 @@ export function useBackgroundSync(
   }, [
     characterId,
     authenticated,
+    autoSyncAllowed,
     retainerDirty,
     territoryDirty,
     journalDirty,

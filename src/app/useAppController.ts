@@ -718,6 +718,7 @@ export function useAppController() {
     {
       characterId: selectedCharacterId,
       authenticated,
+      autoSyncAllowed: !permissions.isDm || dmOwnsSelectedCharacter,
       retainerDirty: retainerDraftDirty,
       territoryDirty: territoryDraftDirty,
       journalDirty: journalDraftDirty,

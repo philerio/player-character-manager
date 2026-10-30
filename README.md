@@ -155,7 +155,8 @@ character datasets are reused when their published revisions are unchanged.
 
 Ordinary **Save** actions persist hireling, territory, and journal changes on the
 device first. Players and DM-owned characters send pending changes automatically
-after a short 2.5-second delay. The app checks for updates when selecting a
+after a short 2.5-second delay. DM drafts for another player’s character do not
+start this automatic-save timer; publishing those drafts requires an explicit push. The app checks for updates when selecting a
 character, returning to the app, and reconnecting. While visible it checks
 revisions every 30 seconds; unchanged datasets are only fetched again after a
 two-minute freshness window. **Refresh now** is available when an immediate
